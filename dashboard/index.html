@@ -1,0 +1,2433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
+<title>Kronos Trader</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230a0c10'/><circle cx='16' cy='16' r='11' fill='none' stroke='%2300e5a0' stroke-width='2'/><line x1='16' y1='8' x2='16' y2='16' stroke='%2300e5a0' stroke-width='2' stroke-linecap='round'/><line x1='16' y1='16' x2='21' y2='19' stroke='%2300e5a0' stroke-width='2' stroke-linecap='round'/></svg>" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.8.0/Recharts.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0a0c10;
+    --surface:  #111318;
+    --border:   #1e2230;
+    --border2:  #2a2f40;
+    --text:     #e8eaf0;
+    --muted:    #5a6080;
+    --accent:   #00e5a0;
+    --accent2:  #0088ff;
+    --warn:     #ff6b35;
+    --danger:   #ff3b5c;
+    --success:  #00e5a0;
+    --mono:     'Space Mono', monospace;
+    --sans:     'DM Sans', sans-serif;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Scan-line overlay */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.04) 2px,
+      rgba(0,0,0,0.04) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  #root { padding: 0; }
+
+  /* Header */
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 32px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: sticky; top: 0; z-index: 100;
+    backdrop-filter: blur(10px);
+  }
+  .header-logo {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .header-logo .symbol {
+    font-family: var(--mono);
+    font-size: 22px; font-weight: 700;
+    color: var(--accent);
+    letter-spacing: -1px;
+  }
+  .header-logo .subtitle {
+    font-size: 11px; color: var(--muted); letter-spacing: 2px;
+    text-transform: uppercase; margin-top: 1px;
+  }
+  .header-status {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+  }
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; } 50% { opacity: 0.4; }
+  }
+
+  /* Layout */
+  .main { padding: 28px 32px; max-width: 1440px; margin: 0 auto; }
+
+  /* Section labels */
+  .section-label {
+    font-family: var(--mono); font-size: 10px; color: var(--muted);
+    letter-spacing: 3px; text-transform: uppercase;
+    margin-bottom: 16px; margin-top: 32px;
+  }
+  .section-label:first-child { margin-top: 0; }
+
+  /* Grid layouts */
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  @media (max-width: 900px) {
+    .grid-3, .grid-2 { grid-template-columns: 1fr; }
+    .main { padding: 16px; }
+    .header { padding: 16px; }
+  }
+
+  /* Cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s;
+  }
+  .card:hover { border-color: var(--border2); }
+  .card::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border2), transparent);
+  }
+
+  /* Portfolio card */
+  .portfolio-card .market-label {
+    font-family: var(--mono); font-size: 10px; color: var(--muted);
+    letter-spacing: 2px; text-transform: uppercase; margin-bottom: 12px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .portfolio-card .market-icon {
+    font-size: 18px;
+  }
+  .portfolio-card .equity {
+    font-family: var(--mono); font-size: 28px; font-weight: 700;
+    color: var(--text); letter-spacing: -1px; margin-bottom: 4px;
+  }
+  .portfolio-card .pnl {
+    font-family: var(--mono); font-size: 13px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .pnl.pos { color: var(--success); }
+  .pnl.neg { color: var(--danger); }
+  .portfolio-card .cash-row {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 16px; padding-top: 14px;
+    border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--muted);
+  }
+  .portfolio-card .cash-val {
+    font-family: var(--mono); font-size: 12px; color: var(--text);
+  }
+
+  /* Total equity hero */
+  .hero-card {
+    background: linear-gradient(135deg, #0d1a2a 0%, #0a1520 100%);
+    border: 1px solid #1a3040;
+    border-radius: 16px;
+    padding: 28px 32px;
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 0;
+    position: relative; overflow: hidden;
+  }
+  .hero-card::after {
+    content: '';
+    position: absolute; right: -40px; top: -40px;
+    width: 200px; height: 200px;
+    background: radial-gradient(circle, rgba(0,229,160,0.06) 0%, transparent 70%);
+  }
+  .hero-label {
+    font-family: var(--mono); font-size: 10px; color: var(--muted);
+    letter-spacing: 3px; text-transform: uppercase; margin-bottom: 8px;
+  }
+  .hero-equity {
+    font-family: var(--mono); font-size: 42px; font-weight: 700;
+    color: var(--text); letter-spacing: -2px;
+  }
+  .hero-pnl {
+    font-family: var(--mono); font-size: 16px; margin-top: 6px;
+  }
+  .hero-right { text-align: right; }
+  .hero-next-run {
+    font-size: 11px; color: var(--muted); font-family: var(--mono);
+    margin-top: 4px;
+  }
+
+  /* Tabs (used inside Charts/Accuracy for sub-toggles) */
+  .tabs {
+    display: flex; gap: 0; margin-bottom: 20px;
+    border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden; width: fit-content;
+  }
+  .tab {
+    padding: 8px 20px; font-size: 12px; font-family: var(--mono);
+    letter-spacing: 1px; text-transform: uppercase; cursor: pointer;
+    border: none; background: transparent; color: var(--muted);
+    transition: all 0.15s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active {
+    background: var(--accent); color: #000; font-weight: 700;
+  }
+
+  /* Hamburger button */
+  .nav-toggle {
+    display: flex; flex-direction: column; justify-content: center;
+    gap: 5px; width: 36px; height: 36px; padding: 6px;
+    background: transparent; border: 1px solid var(--border);
+    border-radius: 8px; cursor: pointer; transition: border-color 0.15s;
+    flex-shrink: 0;
+  }
+  .nav-toggle:hover { border-color: var(--border2); }
+  .nav-toggle span {
+    display: block; height: 2px; border-radius: 2px;
+    background: var(--muted); transition: background 0.15s;
+  }
+  .nav-toggle:hover span { background: var(--text); }
+
+  /* Active tab pill shown in header */
+  .nav-current {
+    font-family: var(--mono); font-size: 11px; color: var(--accent);
+    letter-spacing: 2px; text-transform: uppercase;
+  }
+
+  /* Drawer overlay */
+  .drawer-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(2px);
+    z-index: 300;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.25s;
+  }
+  .drawer-overlay.open { opacity: 1; pointer-events: auto; }
+
+  /* Drawer panel */
+  .drawer {
+    position: fixed; top: 0; left: 0; bottom: 0;
+    width: 260px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    z-index: 301;
+    transform: translateX(-100%);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .drawer.open { transform: translateX(0); }
+
+  .drawer-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 20px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .drawer-title {
+    font-family: var(--mono); font-size: 10px; color: var(--muted);
+    letter-spacing: 3px; text-transform: uppercase;
+  }
+  .drawer-close {
+    width: 28px; height: 28px; border-radius: 6px;
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); cursor: pointer; font-size: 16px;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s; line-height: 1;
+  }
+  .drawer-close:hover { color: var(--text); border-color: var(--border2); }
+
+  .drawer-nav {
+    flex: 1; overflow-y: auto; padding: 12px 0;
+  }
+
+  .nav-item {
+    display: flex; align-items: center; gap: 14px;
+    padding: 13px 20px; cursor: pointer;
+    font-family: var(--mono); font-size: 12px; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--muted);
+    border: none; background: transparent; width: 100%; text-align: left;
+    transition: all 0.15s; border-left: 3px solid transparent;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+  .nav-item.active {
+    color: var(--accent); border-left-color: var(--accent);
+    background: rgba(0,229,160,0.06); font-weight: 700;
+  }
+  .nav-item .nav-icon { font-size: 16px; width: 20px; text-align: center; }
+
+  /* Table */
+  .table-wrap { overflow-x: auto; }
+  table {
+    width: 100%; border-collapse: collapse;
+    font-size: 13px;
+  }
+  th {
+    font-family: var(--mono); font-size: 9px; color: var(--muted);
+    letter-spacing: 2px; text-transform: uppercase;
+    padding: 10px 12px; text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 12px 12px; border-bottom: 1px solid var(--border);
+    color: var(--text); font-size: 13px;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-family: var(--mono); font-size: 10px; letter-spacing: 1px;
+    text-transform: uppercase; font-weight: 700;
+  }
+  .badge-buy  { background: rgba(0,229,160,0.15); color: var(--success); }
+  .badge-sell { background: rgba(255,59,92,0.15);  color: var(--danger); }
+  .badge-open   { background: rgba(0,136,255,0.15); color: var(--accent2); }
+  .badge-closed { background: rgba(90,96,128,0.2);  color: var(--muted); }
+
+  .mono { font-family: var(--mono); }
+
+  /* Prediction cards */
+  .pred-card {
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 12px;
+    background: var(--surface);
+    transition: border-color 0.2s;
+  }
+  .pred-card:hover { border-color: var(--border2); }
+  .pred-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    margin-bottom: 12px;
+  }
+  .pred-symbol {
+    font-family: var(--mono); font-size: 16px; font-weight: 700; color: var(--text);
+  }
+  .pred-time {
+    font-size: 11px; color: var(--muted); font-family: var(--mono);
+  }
+  .pred-prices {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  }
+  .pred-price-item label {
+    font-size: 9px; color: var(--muted); letter-spacing: 2px;
+    text-transform: uppercase; display: block; margin-bottom: 3px;
+    font-family: var(--mono);
+  }
+  .pred-price-item .val {
+    font-family: var(--mono); font-size: 13px; color: var(--text);
+  }
+  .confidence-bar {
+    margin-top: 12px; height: 3px; background: var(--border);
+    border-radius: 2px; overflow: hidden;
+  }
+  .confidence-fill {
+    height: 100%; border-radius: 2px;
+    transition: width 0.5s ease;
+  }
+
+  /* Trigger button */
+  .btn {
+    padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 1px;
+    text-transform: uppercase; font-weight: 700; transition: all 0.15s;
+  }
+  .btn-primary {
+    background: var(--accent); color: #000;
+  }
+  .btn-primary:hover { filter: brightness(1.1); }
+  .btn-primary:active { transform: scale(0.97); }
+  .btn-secondary {
+    background: transparent; color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  .btn-secondary:hover { color: var(--text); border-color: var(--border2); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .trigger-row {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 20px;
+  }
+
+  /* Positions */
+  .pos-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 0; border-bottom: 1px solid var(--border);
+  }
+  .pos-item:last-child { border-bottom: none; }
+  .pos-sym { font-family: var(--mono); font-weight: 700; }
+  .pos-qty { font-size: 12px; color: var(--muted); font-family: var(--mono); margin-top: 2px; }
+
+  .spinner {
+    width: 20px; height: 20px; border: 2px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 32px 0; }
+
+  select {
+    background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 12px; font-family: var(--mono); font-size: 11px;
+    cursor: pointer;
+  }
+
+  /* Settings inputs */
+  .settings-input {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-family: var(--mono);
+    font-size: 13px;
+    width: 100%;
+    transition: border-color 0.2s;
+  }
+  .settings-input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .settings-input::placeholder { color: var(--muted); }
+
+  /* Symbol tags */
+  .sym-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(0,136,255,0.12);
+    color: var(--accent2);
+    border: 1px solid rgba(0,136,255,0.3);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .sym-tag-remove {
+    background: none; border: none; color: var(--muted);
+    cursor: pointer; font-size: 16px; line-height: 1;
+    padding: 0; margin-left: 2px;
+  }
+  .sym-tag-remove:hover { color: var(--danger); }
+
+  /* Stat cards */
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px 20px;
+    text-align: center;
+    position: relative; overflow: hidden;
+  }
+  .stat-card::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border2), transparent);
+  }
+  .stat-label {
+    font-family: var(--mono); font-size: 9px; color: var(--muted);
+    letter-spacing: 3px; text-transform: uppercase; margin-bottom: 12px;
+  }
+  .stat-value {
+    font-family: var(--mono); font-size: 36px; font-weight: 700;
+    letter-spacing: -1px;
+  }
+
+  /* Sticky save bar */
+  .save-bar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: rgba(10,12,16,0.96);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid var(--border);
+    padding: 16px 32px;
+    display: flex; align-items: center; gap: 16px;
+    z-index: 200;
+  }
+
+  /* System health bar */
+  .sys-bar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: rgba(10,12,16,0.97);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; flex-wrap: wrap;
+    padding: 0 8px; gap: 0;
+    z-index: 150;
+  }
+  .sys-bar-item {
+    display: flex; align-items: center; gap: 5px;
+    font-family: var(--mono); font-size: 10px;
+    color: var(--muted); letter-spacing: 0.5px;
+    padding: 0 10px; height: 36px;
+    border-right: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .sys-bar-item:last-child { border-right: none; }
+  .sys-bar-item .sys-label { color: var(--muted); }
+  .sys-bar-item .sys-val   { font-weight: 700; }
+  .sys-val.ok     { color: var(--success); }
+  .sys-val.warn   { color: #f5a623; }
+  .sys-val.hot    { color: var(--danger); }
+  /* Push page content above the bar — 36px single row, 72px two rows */
+  .main { padding-bottom: 52px; }
+
+  /* Mobile bottom tab bar */
+  .mobile-nav {
+    display: none;
+  }
+  @media (max-width: 768px) {
+    .sys-bar { display: none; }
+    .nav-toggle { display: none; }
+    .main { padding-bottom: 72px !important; }
+    .mobile-nav {
+      display: flex;
+      position: fixed; bottom: 0; left: 0; right: 0;
+      height: 60px;
+      background: rgba(10,12,16,0.98);
+      backdrop-filter: blur(12px);
+      border-top: 1px solid var(--border);
+      z-index: 200;
+    }
+    .mobile-nav-btn {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 3px; padding: 6px 2px;
+      background: none; border: none; cursor: pointer;
+      color: var(--muted);
+      font-family: var(--mono); font-size: 8px;
+      letter-spacing: 0.5px; text-transform: uppercase;
+      transition: color 0.15s;
+    }
+    .mobile-nav-btn:hover { color: var(--text); }
+    .mobile-nav-btn.active { color: var(--accent); }
+    .mobile-nav-btn .mnav-icon { font-size: 17px; line-height: 1; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef, useMemo } = React;
+const {
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  LineChart, Line, BarChart, Bar, ComposedChart,
+  ReferenceLine, ReferenceArea, CartesianGrid, Legend, Cell
+} = Recharts;
+
+// Uses same origin so it works on localhost, Tailscale IP, and Funnel HTTPS
+const API = window.location.hostname === 'localhost'
+  ? 'http://localhost:8000'
+  : window.location.origin;
+
+// ---- helpers ----
+const fmt  = (n, d=2) => n == null ? '—' : Number(n).toLocaleString('en-US', {minimumFractionDigits:d, maximumFractionDigits:d});
+const fmtUSD = n => n == null ? '—' : '$' + fmt(n);
+const fmtPct = n => n == null ? '—' : (n >= 0 ? '+' : '') + fmt(n) + '%';
+const ago = iso => {
+  if (!iso) return '—';
+  // Backend returns naive UTC strings with no 'Z' — JS would treat them as
+  // local time without this, producing large negative diffs on non-UTC devices.
+  const utc = iso.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(iso) ? iso : iso + 'Z';
+  const diff = (Date.now() - new Date(utc)) / 1000;
+  if (diff < 5) return 'just now';
+  if (diff < 60) return `${Math.floor(diff)}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  return `${Math.floor(diff/86400)}d ago`;
+};
+
+// ---- fetch hook ----
+function useInterval(fn, ms) {
+  const cb = useRef(fn);
+  useEffect(() => { cb.current = fn; }, [fn]);
+  useEffect(() => {
+    const id = setInterval(() => cb.current(), ms);
+    return () => clearInterval(id);
+  }, [ms]);
+}
+
+// ===============================================
+// APP
+// ===============================================
+function App() {
+  const [tab, setTab] = useState('overview');
+  const [navOpen, setNavOpen] = useState(false);
+  const [overview, setOverview] = useState(null);
+  const [trades, setTrades] = useState([]);
+  const [predictions, setPredictions] = useState([]);
+  const [prices, setPrices] = useState({});
+  const [scheduler, setScheduler] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [triggering, setTriggering] = useState(false);
+  const [triggerMarket, setTriggerMarket] = useState('');
+  const [triggerSymbol, setTriggerSymbol] = useState('');
+  const [symbolsByMarket, setSymbolsByMarket] = useState({});
+  const [lastUpdate, setLastUpdate] = useState(null);
+  const [sysStats, setSysStats]     = useState(null);
+
+  const fetchSystem = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/api/system`);
+      if (r.ok) setSysStats(await r.json());
+    } catch(e) { /* silent */ }
+  }, []);
+
+  const fetchAll = useCallback(async () => {
+    try {
+      const [ov, tr, pr, sc, px, st] = await Promise.all([
+        fetch(`${API}/api/overview`).then(r => r.json()),
+        fetch(`${API}/api/trades?limit=50`).then(r => r.json()),
+        fetch(`${API}/api/predictions?limit=30`).then(r => r.json()),
+        fetch(`${API}/api/scheduler/status`).then(r => r.json()),
+        fetch(`${API}/api/prices`).then(r => r.json()),
+        fetch(`${API}/api/settings`).then(r => r.json()),
+      ]);
+      setOverview(ov);
+      setTrades(tr);
+      setPredictions(pr);
+      setScheduler(sc);
+      setPrices(px);
+      setSymbolsByMarket(st.symbols || {});
+      setLastUpdate(new Date());
+    } catch(e) {
+      console.error('Fetch error', e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchAll(); fetchSystem(); }, []);
+  useInterval(fetchAll,   30000);
+  useInterval(fetchSystem, 30000);
+
+  // While predictions are actively running on the server, poll every 5 s
+  // so the button re-enables promptly when the cycle finishes.
+  const predictionsRunning = (scheduler?.active_predictions?.length ?? 0) > 0;
+  useEffect(() => {
+    if (!predictionsRunning) return;
+    const id = setInterval(fetchAll, 5000);
+    return () => clearInterval(id);
+  }, [predictionsRunning, fetchAll]);
+
+  const triggerPrediction = async () => {
+    setTriggering(true);
+    try {
+      await fetch(`${API}/api/predict/trigger`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          market: triggerMarket || null,
+          symbol: triggerSymbol || null,
+        }),
+      });
+      setTimeout(fetchAll, 2000);
+    } catch(e) { console.error(e); }
+    finally { setTriggering(false); }
+  };
+
+  return (
+    <div>
+      {/* SIDE NAV DRAWER */}
+      <div className={`drawer-overlay ${navOpen ? 'open' : ''}`} onClick={() => setNavOpen(false)} />
+      <nav className={`drawer ${navOpen ? 'open' : ''}`}>
+        <div className="drawer-header">
+          <span className="drawer-title">Navigation</span>
+          <button className="drawer-close" onClick={() => setNavOpen(false)}>×</button>
+        </div>
+        <div className="drawer-nav">
+          {[
+            { id:'overview',    icon:'◈', label:'Overview'    },
+            { id:'predictions', icon:'◎', label:'Predictions' },
+            { id:'charts',      icon:'╱╲', label:'Charts'     },
+            { id:'symbols',     icon:'◫', label:'Symbols'     },
+            { id:'settings',    icon:'⚙', label:'Settings'    },
+          ].map(({ id, icon, label }) => (
+            <button
+              key={id}
+              className={`nav-item ${tab === id ? 'active' : ''}`}
+              onClick={() => { setTab(id); setNavOpen(false); }}
+            >
+              <span className="nav-icon">{icon}</span>
+              {label}
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      {/* HEADER */}
+      <header className="header">
+        <div style={{ display:'flex', alignItems:'center', gap:16 }}>
+          <button className="nav-toggle" onClick={() => setNavOpen(true)} aria-label="Open navigation">
+            <span /><span /><span />
+          </button>
+          <div className="header-logo">
+            <div>
+              <div className="symbol">⏰ KRONOS</div>
+              <div className="subtitle">Paper Trading Monitor</div>
+            </div>
+          </div>
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:20 }}>
+          <span className="nav-current">{tab}</span>
+          <div className="header-status">
+            <div className="status-dot" />
+            {lastUpdate ? `Updated ${ago(lastUpdate.toISOString())}` : 'Connecting...'}
+          </div>
+        </div>
+      </header>
+
+      <SystemBar stats={sysStats} />
+
+      {/* MOBILE BOTTOM NAV */}
+      <nav className="mobile-nav">
+        {[
+          { id:'overview',    icon:'◈', label:'Home'        },
+          { id:'predictions', icon:'◎', label:'Predictions' },
+          { id:'charts',      icon:'▲', label:'Charts'      },
+          { id:'symbols',     icon:'◫', label:'Symbols'     },
+          { id:'settings',    icon:'⚙', label:'Settings'    },
+        ].map(({ id, icon, label }) => (
+          <button
+            key={id}
+            className={`mobile-nav-btn ${tab === id ? 'active' : ''}`}
+            onClick={() => setTab(id)}
+          >
+            <span className="mnav-icon">{icon}</span>
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      <main className="main">
+        {loading ? (
+          <div style={{display:'flex',alignItems:'center',gap:12,padding:'60px 0'}}>
+            <div className="spinner" />
+            <span style={{color:'var(--muted)',fontFamily:'var(--mono)',fontSize:12}}>
+              LOADING KRONOS DATA...
+            </span>
+          </div>
+        ) : (
+          <>
+            {/* ---- OVERVIEW TAB ---- */}
+            {tab === 'overview' && overview && (
+              <OverviewTab overview={overview} trades={trades} scheduler={scheduler} />
+            )}
+
+
+            {/* ---- PREDICTIONS TAB ---- */}
+            {tab === 'predictions' && (
+              <>
+                {/* Next scheduled run banner */}
+                {scheduler && (() => {
+                  const predJobs = scheduler.jobs.filter(j => j.id.startsWith('predict_'));
+                  const nextRun  = predJobs
+                    .map(j => j.next_run ? new Date(j.next_run) : null)
+                    .filter(Boolean)
+                    .sort((a, b) => a - b)[0];
+                  const diffMs   = nextRun ? nextRun - Date.now() : null;
+                  const diffMin  = diffMs != null ? Math.max(0, Math.floor(diffMs / 60000)) : null;
+                  const diffSec  = diffMs != null ? Math.max(0, Math.floor((diffMs % 60000) / 1000)) : null;
+                  const countdown = diffMin != null
+                    ? diffMin >= 60
+                      ? `${Math.floor(diffMin / 60)}h ${diffMin % 60}m`
+                      : `${diffMin}m ${diffSec}s`
+                    : null;
+                  return (
+                    <div style={{
+                      display:'flex', alignItems:'center', gap:12,
+                      background:'var(--surface)', border:'1px solid var(--border)',
+                      borderRadius:8, padding:'10px 16px', marginBottom:16,
+                    }}>
+                      <div style={{
+                        width:8, height:8, borderRadius:'50%',
+                        background: scheduler.running ? 'var(--success)' : 'var(--danger)',
+                        boxShadow: scheduler.running ? '0 0 6px var(--success)' : 'none',
+                        flexShrink:0,
+                      }} />
+                      <span style={{fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)', letterSpacing:1}}>
+                        {scheduler.running ? 'SCHEDULER RUNNING' : 'SCHEDULER STOPPED'}
+                      </span>
+                      {scheduler.running && countdown && (
+                        <>
+                          <span style={{color:'var(--border)', fontSize:11}}>|</span>
+                          <span style={{fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)'}}>
+                            Next run in{' '}
+                            <span style={{color:'var(--accent)', fontWeight:700}}>{countdown}</span>
+                            {nextRun && (
+                              <span style={{color:'var(--muted)', marginLeft:6}}>
+                                ({nextRun.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})})
+                              </span>
+                            )}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                <div className="trigger-row">
+                  <select
+                    value={triggerMarket}
+                    onChange={e => { setTriggerMarket(e.target.value); setTriggerSymbol(''); }}
+                  >
+                    <option value="">All Markets</option>
+                    <option value="crypto">Crypto</option>
+                    <option value="stocks">Stocks</option>
+                    <option value="forex">Forex</option>
+                  </select>
+
+                  {/* Symbol picker — shown when a specific market is selected */}
+                  {triggerMarket && (symbolsByMarket[triggerMarket] || []).length > 0 && (
+                    <select value={triggerSymbol} onChange={e => setTriggerSymbol(e.target.value)}>
+                      <option value="">All {triggerMarket} symbols</option>
+                      {(symbolsByMarket[triggerMarket] || []).map(s => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  )}
+
+                  <button
+                    className="btn btn-primary"
+                    onClick={triggerPrediction}
+                    disabled={triggering || predictionsRunning}
+                  >
+                    {triggering ? '⟳ Queuing...'
+                      : predictionsRunning
+                        ? `⟳ Running (${scheduler.active_predictions.join(', ')})...`
+                        : '▶ Run Prediction Now'}
+                  </button>
+                  <span style={{fontSize:11,color:'var(--muted)',fontFamily:'var(--mono)'}}>
+                    {triggerSymbol
+                      ? `for ${triggerSymbol} only`
+                      : triggerMarket
+                        ? `all ${triggerMarket} symbols`
+                        : 'or wait for scheduled run'}
+                  </span>
+                </div>
+                <div className="section-label">Prediction History</div>
+                {(() => {
+                  // Group dual predictions: same symbol within 90s → show side-by-side
+                  const groups = [];
+                  const used = new Set();
+                  for (let i = 0; i < predictions.length; i++) {
+                    if (used.has(i)) continue;
+                    const p = predictions[i];
+                    let paired = null;
+                    for (let j = i + 1; j < Math.min(i + 6, predictions.length); j++) {
+                      if (used.has(j)) continue;
+                      const q = predictions[j];
+                      if (q.symbol === p.symbol && q.market === p.market &&
+                          q.model_name !== p.model_name &&
+                          Math.abs(new Date(p.created_at) - new Date(q.created_at)) < 90000) {
+                        paired = j;
+                        break;
+                      }
+                    }
+                    if (paired !== null) {
+                      // Order: small first, mini second
+                      const a = predictions[i], b = predictions[paired];
+                      const [sm, mn] = (a.model_name === 'small') ? [a, b] : [b, a];
+                      groups.push({ type:'dual', small:sm, mini:mn, key:`dual-${sm.id}-${mn.id}` });
+                      used.add(i); used.add(paired);
+                    } else {
+                      groups.push({ type:'single', pred:p, key:`s-${p.id}` });
+                      used.add(i);
+                    }
+                  }
+                  return groups.map(g => {
+                    if (g.type === 'single') return <PredCard key={g.key} pred={g.pred} />;
+                    const agreeColor = (g.small.confidence >= 55) === (g.mini.confidence >= 55)
+                      ? 'var(--success)' : 'var(--warn)';
+                    const agreeLabel = (g.small.confidence >= 55) === (g.mini.confidence >= 55)
+                      ? '✓ Models agree' : '⚠ Models disagree';
+                    return (
+                      <div key={g.key} style={{ marginBottom:12 }}>
+                        <div style={{
+                          display:'flex', alignItems:'center', gap:8,
+                          fontFamily:'var(--mono)', fontSize:10, color: agreeColor,
+                          letterSpacing:1, marginBottom:6,
+                        }}>
+                          <span style={{ fontWeight:700 }}>{agreeLabel}</span>
+                          <span style={{ color:'var(--muted)' }}>— dual prediction for {g.small.symbol}</span>
+                        </div>
+                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+                          <PredCard pred={g.small} />
+                          <PredCard pred={g.mini} />
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+                {predictions.length === 0 && (
+                  <div className="card"><div className="empty">No predictions yet. Click "Run Prediction Now" to start.</div></div>
+                )}
+              </>
+            )}
+
+            {/* ---- CHARTS TAB ---- */}
+            {tab === 'charts' && <ChartsTab symbolsByMarket={symbolsByMarket} prices={prices} />}
+
+            {/* ---- SYMBOLS TAB ---- */}
+            {tab === 'symbols' && <SymbolsTab />}
+
+            {/* ---- SETTINGS TAB ---- */}
+            {tab === 'settings' && <SettingsTab />}
+          </>
+        )}
+      </main>
+    </div>
+  );
+}
+
+// ---- System Health Bar ----
+function SystemBar({ stats: s }) {
+  const dash = '—';
+
+  // Color helpers
+  const toF      = c  => c  == null ? null : Math.round(c * 9/5 + 32);
+  const tempCls  = f  => f  == null ? '' : f  > 167 ? 'hot' : f  > 140 ? 'warn' : 'ok';
+  const ramCls   = p  => p  == null ? '' : p  > 85 ? 'hot' : p  > 70 ? 'warn' : 'ok';
+  const diskCls  = p  => p  == null ? '' : p  > 90 ? 'hot' : p  > 80 ? 'warn' : 'ok';
+  const cpuCls   = p  => p  == null ? '' : p  > 85 ? 'hot' : p  > 60 ? 'warn' : 'ok';
+
+  const v = (val, suffix = '') => val == null ? dash : `${val}${suffix}`;
+
+  const cpuTempF = toF(s?.cpu_temp);
+
+  return (
+    <div className="sys-bar">
+      <div className="sys-bar-item">
+        <span className="sys-label">🌡 CPU</span>
+        <span className={`sys-val ${tempCls(cpuTempF)}`}>{cpuTempF == null ? dash : `${cpuTempF}°F`}</span>
+      </div>
+      <div className="sys-bar-item">
+        <span className="sys-label">⚡ CPU</span>
+        <span className={`sys-val ${cpuCls(s?.cpu_usage)}`}>{v(s?.cpu_usage, '%')}</span>
+      </div>
+      <div className="sys-bar-item">
+        <span className="sys-label">💾 RAM</span>
+        <span className={`sys-val ${ramCls(s?.ram_pct)}`}>{v(s?.ram_pct, '%')}</span>
+        {s?.ram_used != null && (
+          <span style={{ color:'var(--muted)', fontSize:9 }}>
+            {Math.round(s.ram_used)}MB
+          </span>
+        )}
+      </div>
+      <div className="sys-bar-item">
+        <span className="sys-label">💿 Disk</span>
+        <span className={`sys-val ${diskCls(s?.disk_pct)}`}>{v(s?.disk_pct, '%')}</span>
+        {s?.disk_used != null && (
+          <span style={{ color:'var(--muted)', fontSize:9 }}>
+            {s.disk_used}GB
+          </span>
+        )}
+      </div>
+      <div className="sys-bar-item">
+        <span className="sys-label">⏱ Uptime</span>
+        <span className="sys-val ok">{v(s?.uptime_hours, 'h')}</span>
+      </div>
+      <div className="sys-bar-item">
+        <span className="sys-label">🤖 Today</span>
+        <span className="sys-val ok">{v(s?.prediction_count_today)}</span>
+        <span style={{ color:'var(--muted)' }}>preds</span>
+      </div>
+      <div className="sys-bar-item">
+        <span className="sys-label">Last run</span>
+        <span className="sys-val"
+          style={{ color: s?.last_prediction_ago == null ? 'var(--muted)'
+                        : s.last_prediction_ago > 90 ? 'var(--danger)'
+                        : s.last_prediction_ago > 70 ? '#f5a623'
+                        : 'var(--success)' }}>
+          {s?.last_prediction_ago == null ? dash : `${s.last_prediction_ago}m ago`}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ---- Pagination ----
+function Pagination({ page, total, pageSize, onChange }) {
+  const totalPages = Math.ceil(total / pageSize);
+  if (totalPages <= 1) return null;
+  const start = page * pageSize + 1;
+  const end   = Math.min((page + 1) * pageSize, total);
+  return (
+    <div style={{
+      display:'flex', alignItems:'center', justifyContent:'space-between',
+      padding:'12px 0 4px', fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)',
+    }}>
+      <span>{start}–{end} of {total}</span>
+      <div style={{ display:'flex', gap:6 }}>
+        <button
+          onClick={() => onChange(page - 1)} disabled={page === 0}
+          style={{
+            background:'none', border:'1px solid var(--border)', color:'var(--muted)',
+            borderRadius:6, padding:'4px 12px', cursor:'pointer', fontFamily:'var(--mono)',
+            fontSize:11, opacity: page === 0 ? 0.3 : 1,
+          }}
+        >‹ Prev</button>
+        <span style={{ padding:'4px 8px', color:'var(--text)' }}>{page + 1} / {totalPages}</span>
+        <button
+          onClick={() => onChange(page + 1)} disabled={page >= totalPages - 1}
+          style={{
+            background:'none', border:'1px solid var(--border)', color:'var(--muted)',
+            borderRadius:6, padding:'4px 12px', cursor:'pointer', fontFamily:'var(--mono)',
+            fontSize:11, opacity: page >= totalPages - 1 ? 0.3 : 1,
+          }}
+        >Next ›</button>
+      </div>
+    </div>
+  );
+}
+
+// ---- Overview Tab ----
+const OVERVIEW_PAGE_SIZE = 10;
+
+function OverviewTab({ overview, trades, scheduler }) {
+  const [section, setSection]     = useState('trades');
+  const [tradePage, setTradePage] = useState(0);
+  const totalPnlPos = overview.total_pnl >= 0;
+
+  // Reset trade page when switching to trades tab
+  const switchSection = (s) => { setSection(s); if (s === 'trades') setTradePage(0); };
+
+  const pagedTrades = trades.slice(
+    tradePage * OVERVIEW_PAGE_SIZE,
+    (tradePage + 1) * OVERVIEW_PAGE_SIZE
+  );
+
+  return (
+    <>
+      {/* Hero */}
+      <div className="hero-card" style={{marginBottom:16}}>
+        <div>
+          <div className="hero-label">Total Portfolio Value</div>
+          <div className="hero-equity">{fmtUSD(overview.total_equity)}</div>
+          <div className={`hero-pnl ${totalPnlPos ? 'pnl pos' : 'pnl neg'}`}>
+            {fmtUSD(overview.total_pnl)} ({fmtPct(overview.total_pnl_pct)})
+            <span style={{fontSize:11,color:'var(--muted)',marginLeft:8}}>
+              vs {fmtUSD(overview.total_starting)} starting
+            </span>
+          </div>
+        </div>
+        <div className="hero-right">
+          {scheduler && (
+            <>
+              <div className="badge badge-open" style={{marginBottom:8}}>
+                {scheduler.running ? '● SCHEDULER RUNNING' : '○ SCHEDULER STOPPED'}
+              </div>
+              {scheduler.jobs.slice(0,1).map(j => (
+                <div key={j.id} className="hero-next-run">
+                  Next run: {j.next_run ? new Date(j.next_run).toLocaleTimeString() : '—'}
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Portfolio breakdown */}
+      <div className="grid-3" style={{marginBottom:24}}>
+        {overview.portfolios.map(p => (
+          <PortfolioCard key={p.market} data={p} />
+        ))}
+      </div>
+
+      {/* Sub-tabs */}
+      <div className="tabs" style={{marginBottom:20}}>
+        {[['trades','Trades'],['accuracy','Accuracy'],['equity','Equity']].map(([id, label]) => (
+          <button key={id} className={`tab ${section===id?'active':''}`} onClick={() => switchSection(id)}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Trades section */}
+      {section === 'trades' && (
+        <div className="card">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Dir</th>
+                  <th>Qty</th>
+                  <th>Price</th>
+                  <th>Value</th>
+                  <th>Status</th>
+                  <th>PnL</th>
+                  <th>Opened</th>
+                  <th>Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pagedTrades.map(t => (
+                  <tr key={t.id}>
+                    <td className="mono">{t.symbol}</td>
+                    <td><span className={`badge badge-${t.direction}`}>{t.direction}</span></td>
+                    <td className="mono">{fmt(t.quantity, 6)}</td>
+                    <td className="mono">{fmtUSD(t.price)}</td>
+                    <td className="mono">{fmtUSD(t.total_value)}</td>
+                    <td><span className={`badge badge-${t.status}`}>{t.status}</span></td>
+                    <td className={`mono ${t.realized_pnl >= 0 ? 'pnl pos' : 'pnl neg'}`}>
+                      {t.realized_pnl !== 0 ? fmtUSD(t.realized_pnl) : '—'}
+                    </td>
+                    <td style={{fontSize:11,color:'var(--muted)'}}>{ago(t.opened_at)}</td>
+                    <td style={{fontSize:11,color:'var(--muted)',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                      {t.notes}
+                    </td>
+                  </tr>
+                ))}
+                {trades.length === 0 && (
+                  <tr><td colSpan={9}><div className="empty">No trades yet</div></td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <Pagination
+            page={tradePage} total={trades.length}
+            pageSize={OVERVIEW_PAGE_SIZE} onChange={setTradePage}
+          />
+        </div>
+      )}
+
+      {/* Accuracy section */}
+      {section === 'accuracy' && <AccuracyTab />}
+
+      {/* Equity section */}
+      {section === 'equity' && <EquityTab />}
+    </>
+  );
+}
+
+// ---- Portfolio Card ----
+function PortfolioCard({ data }) {
+  const icons = { crypto:'₿', stocks:'📈', forex:'💱' };
+  const pos = data.total_pnl >= 0;
+  return (
+    <div className="card portfolio-card">
+      <div className="market-label">
+        <span>{data.market?.toUpperCase()}</span>
+        <span className="market-icon">{icons[data.market] || '💰'}</span>
+      </div>
+      <div className="equity">{fmtUSD(data.equity)}</div>
+      <div className={`pnl ${pos?'pos':'neg'}`}>
+        {fmtUSD(data.total_pnl)} ({fmtPct(data.total_pnl_pct)})
+      </div>
+      <div className="cash-row">
+        <span>Cash Available</span>
+        <span className="cash-val">{fmtUSD(data.cash_balance)}</span>
+      </div>
+      {data.positions?.length > 0 && (
+        <div style={{marginTop:12}}>
+          <div style={{fontSize:9,color:'var(--muted)',fontFamily:'var(--mono)',letterSpacing:2,marginBottom:8}}>POSITIONS</div>
+          {data.positions.map(p => (
+            <div key={p.symbol} className="pos-item">
+              <div>
+                <div className="pos-sym">{p.symbol}</div>
+                <div className="pos-qty">{fmt(p.quantity,6)} @ {fmtUSD(p.avg_price)}</div>
+              </div>
+              <div style={{textAlign:'right'}}>
+                <div className="mono" style={{fontSize:13}}>{fmtUSD(p.current_price)}</div>
+                <div className={`mono ${p.unrealized_pnl >= 0 ? 'pnl pos' : 'pnl neg'}`} style={{fontSize:11}}>
+                  {fmtUSD(p.unrealized_pnl)}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Prediction Card (full) ----
+function PredCard({ pred }) {
+  const bullish = pred.confidence >= 55;
+  const confColor = bullish ? 'var(--success)' : 'var(--danger)';
+  const priceDiff = pred.predicted_close - pred.current_price;
+  const pricePct  = (priceDiff / pred.current_price) * 100;
+  const modelName = pred.model_name || 'small';
+  const modelColor = modelName === 'mini' ? '#a855f7' : 'var(--accent2)';
+  const modelLabel = modelName === 'mini' ? 'Kronos-mini · 4.1M' : 'Kronos-small · 24.7M';
+  return (
+    <div className="pred-card">
+      <div className="pred-header">
+        <div>
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <div className="pred-symbol">{pred.symbol}</div>
+            <span style={{
+              display:'inline-block', padding:'1px 7px', borderRadius:4,
+              fontFamily:'var(--mono)', fontSize:9, fontWeight:700, letterSpacing:1,
+              textTransform:'uppercase',
+              background: `${modelColor}22`, color: modelColor,
+              border: `1px solid ${modelColor}44`,
+            }}>{modelLabel}</span>
+          </div>
+          <div style={{fontSize:10,color:'var(--muted)',marginTop:2,fontFamily:'var(--mono)'}}>
+            {pred.market?.toUpperCase()} · {pred.horizon_hours}h horizon · via {pred.triggered_by}
+          </div>
+        </div>
+        <div style={{textAlign:'right'}}>
+          <div className="mono" style={{fontSize:14,color:confColor,fontWeight:700}}>
+            {pred.confidence}% bull
+          </div>
+          <div className="pred-time">{ago(pred.created_at)}</div>
+        </div>
+      </div>
+      <div className="pred-prices">
+        {[['Current','current_price'],['Close','predicted_close'],['High','predicted_high'],['Low','predicted_low']].map(([l,k]) => (
+          <div key={k} className="pred-price-item">
+            <label>{l}</label>
+            <div className="val">{fmtUSD(pred[k])}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{display:'flex',alignItems:'center',gap:8,marginTop:10}}>
+        <span style={{fontSize:11,fontFamily:'var(--mono)',color: pricePct >= 0 ? 'var(--success)' : 'var(--danger)'}}>
+          {pricePct >= 0 ? '▲' : '▼'} {Math.abs(pricePct).toFixed(2)}% predicted move
+        </span>
+      </div>
+      <div className="confidence-bar">
+        <div className="confidence-fill" style={{
+          width: `${pred.confidence}%`,
+          background: `linear-gradient(90deg, ${confColor}88, ${confColor})`
+        }} />
+      </div>
+    </div>
+  );
+}
+
+// ---- Prediction Mini Row ----
+function PredMini({ pred }) {
+  const bullish = pred.confidence >= 55;
+  return (
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:'1px solid var(--border)'}}>
+      <div>
+        <span className="mono" style={{fontWeight:700,fontSize:13}}>{pred.symbol}</span>
+        <span style={{fontSize:10,color:'var(--muted)',marginLeft:8,fontFamily:'var(--mono)'}}>{pred.market}</span>
+      </div>
+      <div style={{textAlign:'right'}}>
+        <div className="mono" style={{fontSize:12, color: bullish ? 'var(--success)' : 'var(--danger)'}}>
+          {pred.confidence}% bull
+        </div>
+        <div style={{fontSize:10,color:'var(--muted)',fontFamily:'var(--mono)'}}>{ago(pred.created_at)}</div>
+      </div>
+    </div>
+  );
+}
+
+// ---- Trade Row ----
+function TradeRow({ trade, compact }) {
+  return (
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:'1px solid var(--border)'}}>
+      <div>
+        <span className="mono" style={{fontWeight:700,fontSize:13}}>{trade.symbol}</span>
+        <span style={{marginLeft:8}}><span className={`badge badge-${trade.direction}`}>{trade.direction}</span></span>
+      </div>
+      <div style={{textAlign:'right'}}>
+        <div className="mono" style={{fontSize:12}}>{fmtUSD(trade.total_value)}</div>
+        <div style={{fontSize:10,color:'var(--muted)',fontFamily:'var(--mono)'}}>{ago(trade.opened_at)}</div>
+      </div>
+    </div>
+  );
+}
+
+// ===============================================
+// EQUITY TAB
+// ===============================================
+function EquityTab() {
+  const [eqMarket, setEqMarket] = useState('all');
+  const [days, setDays]         = useState(30);
+  const [data, setData]         = useState(null);
+  const [loading, setLoading]   = useState(false);
+
+  const fetchData = useCallback(async (mkt, d) => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ days: d });
+      if (mkt !== 'all') params.set('market', mkt);
+      const r = await fetch(`${API}/api/equity-curve?${params}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setData(await r.json());
+    } catch(e) {
+      console.error('equity-curve fetch error', e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchData(eqMarket, days); }, [eqMarket, days]);
+
+  const points   = data?.points ?? [];
+  const startBal = data?.starting_balance ?? 0;
+  const lastEq   = points.length > 0 ? points[points.length - 1].equity : startBal;
+  const isUp     = lastEq >= startBal;
+  const lineColor = isUp ? 'var(--success)' : 'var(--danger)';
+
+  const tickFmt = t => {
+    try {
+      const d = new Date(t);
+      return d.toLocaleDateString('en-US', { month:'short', day:'numeric' });
+    } catch { return ''; }
+  };
+
+  const ttStyle = {
+    background: 'var(--surface)', border: '1px solid var(--border)',
+    borderRadius: 8, fontFamily: 'var(--mono)', fontSize: 11,
+  };
+
+  return (
+    <div>
+      {/* Controls */}
+      <div style={{ display:'flex', gap:12, alignItems:'center', marginBottom:20, flexWrap:'wrap' }}>
+        <select value={eqMarket} onChange={e => setEqMarket(e.target.value)}>
+          <option value="all">All Markets</option>
+          <option value="crypto">Crypto</option>
+          <option value="stocks">Stocks</option>
+          <option value="forex">Forex</option>
+        </select>
+        <div className="tabs" style={{ marginBottom:0 }}>
+          {[{label:'7d',val:7},{label:'30d',val:30},{label:'All',val:0}].map(r => (
+            <button key={r.val} className={`tab ${days===r.val?'active':''}`}
+              onClick={() => setDays(r.val)}>
+              {r.label}
+            </button>
+          ))}
+        </div>
+        {loading && <div className="spinner" style={{ width:16, height:16 }} />}
+      </div>
+
+      {/* Chart */}
+      {points.length > 1 ? (
+        <>
+          <div className="section-label">Portfolio Equity Over Time</div>
+          <div className="card" style={{ padding:'20px 8px', marginBottom:24 }}>
+            <ResponsiveContainer width="100%" height={320}>
+              <AreaChart data={points} margin={{ top:10, right:20, left:10, bottom:10 }}>
+                <defs>
+                  <linearGradient id="eqFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor={lineColor} stopOpacity={0.25} />
+                    <stop offset="95%" stopColor={lineColor} stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis
+                  dataKey="time"
+                  tickFormatter={tickFmt}
+                  tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
+                  interval="preserveStartEnd"
+                />
+                <YAxis
+                  tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
+                  width={90}
+                  tickFormatter={v => fmtUSD(v)}
+                  domain={['auto','auto']}
+                />
+                <Tooltip
+                  contentStyle={ttStyle}
+                  labelFormatter={t => { try { return new Date(t).toLocaleString(); } catch { return t; } }}
+                  formatter={(val, name) => [
+                    fmtUSD(val),
+                    name === 'equity' ? 'Equity' : name,
+                  ]}
+                />
+                {startBal > 0 && (
+                  <ReferenceLine
+                    y={startBal}
+                    stroke="var(--muted)"
+                    strokeDasharray="6 3"
+                    label={{
+                      value: `Start ${fmtUSD(startBal)}`,
+                      fill: 'var(--muted)', fontSize: 10,
+                      fontFamily: 'var(--mono)', position: 'insideTopRight',
+                    }}
+                  />
+                )}
+                <Area
+                  type="monotone"
+                  dataKey="equity"
+                  stroke={lineColor}
+                  strokeWidth={2}
+                  fill="url(#eqFill)"
+                  dot={false}
+                  name="equity"
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Stat cards */}
+          <div className="grid-3">
+            <div className="stat-card">
+              <div className="stat-label">Max Drawdown</div>
+              <div className="stat-value" style={{ color: data.max_drawdown > 0 ? 'var(--danger)' : 'var(--success)' }}>
+                {data.max_drawdown > 0 ? '-' : ''}{data.max_drawdown}%
+              </div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Best Single Trade</div>
+              <div className="stat-value" style={{ color:'var(--success)', fontSize:28 }}>
+                {fmtUSD(data.best_trade)}
+              </div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Worst Single Trade</div>
+              <div className="stat-value" style={{ color:'var(--danger)', fontSize:28 }}>
+                {fmtUSD(data.worst_trade)}
+              </div>
+            </div>
+          </div>
+        </>
+      ) : !loading && (
+        <div className="card">
+          <div className="empty">
+            No closed trades yet. The equity curve will populate once the first trade closes.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ===============================================
+// CHARTS TAB
+// ===============================================
+function buildChartSymbols(symbolsByMarket) {
+  const entries = [];
+  for (const [market, syms] of Object.entries(symbolsByMarket || {})) {
+    for (const sym of (syms || [])) {
+      // Crypto: BTC/USDT → BTC-USDT for API path; stocks/forex: unchanged
+      const apiSymbol = sym.replace('/', '-');
+      entries.push({ label: `${sym} (${market})`, apiSymbol, market, sym });
+    }
+  }
+  return entries;
+}
+
+function ChartsTab({ symbolsByMarket, prices }) {
+  const chartSymbols = useMemo(() => buildChartSymbols(symbolsByMarket), [symbolsByMarket]);
+  const [selected, setSelected] = useState(null);
+  const [mode, setMode]         = useState('line');
+  const [chartData, setChartData] = useState(null);
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState(null);
+
+  useEffect(() => {
+    if (chartSymbols.length > 0 && !selected) setSelected(chartSymbols[0]);
+  }, [chartSymbols]);
+
+  const fetchChart = useCallback(async (sym) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await fetch(`${API}/api/chart/${sym.market}/${sym.apiSymbol}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setChartData(await r.json());
+    } catch(e) {
+      setError(e.message);
+      setChartData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { if (selected) fetchChart(selected); }, [selected]);
+
+  // Shared tick / tooltip helpers
+  const tickFmt = t => {
+    try { return new Date(t).toLocaleDateString('en-US', { month:'short', day:'numeric' }); }
+    catch { return ''; }
+  };
+  const ttContent = {
+    background: 'var(--surface)', border: '1px solid var(--border)',
+    borderRadius: 8, fontFamily: 'var(--mono)', fontSize: 11,
+  };
+  const ttLabel = t => { try { return new Date(t).toLocaleString(); } catch { return t; } };
+
+  // Merged price+prediction series
+  const { points, nowTime, confidence } = useMemo(() => {
+    if (!chartData) return { points: [], nowTime: null, confidence: null };
+    const actual = (chartData.candles || []).map(c => ({
+      time: c.time, actual: c.close, high: c.high, low: c.low,
+    }));
+    const pred = (chartData.prediction?.candles || []).map(c => ({
+      time: c.time, predicted: c.close, predHigh: c.high, predLow: c.low,
+    }));
+    const nowTime = actual.length > 0 ? actual[actual.length - 1].time : null;
+    return { points: [...actual, ...pred], nowTime, confidence: chartData.prediction?.confidence ?? null };
+  }, [chartData]);
+
+  // Derived indicator values
+  const latestRsi   = chartData?.latest_rsi ?? null;
+  const rsiCond     = chartData?.rsi_condition ?? 'neutral';
+  const macdSig     = chartData?.latest_macd_signal ?? null;
+  const rsiColor    = rsiCond === 'overbought' ? 'var(--danger)' : rsiCond === 'oversold' ? 'var(--success)' : 'var(--text)';
+  const macdColor   = macdSig === 'bullish' ? 'var(--success)' : macdSig === 'bearish' ? 'var(--danger)' : 'var(--muted)';
+  const konfColor   = confidence != null ? (confidence >= 55 ? 'var(--success)' : 'var(--danger)') : 'var(--muted)';
+
+  // Small badge helper
+  const Badge = ({ label, color }) => (
+    <span style={{
+      display:'inline-block', padding:'2px 8px', borderRadius:4,
+      fontFamily:'var(--mono)', fontSize:10, fontWeight:700, letterSpacing:1,
+      textTransform:'uppercase',
+      background: `${color}22`, color,
+      border: `1px solid ${color}44`,
+    }}>{label}</span>
+  );
+
+  // Y-axis shared style
+  const yAxis = (w=60) => (
+    <YAxis tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
+           width={w} />
+  );
+
+  return (
+    <div>
+      {/* ── Live Prices ── */}
+      {prices && (
+        <>
+          <div className="section-label" style={{marginTop:0}}>Live Prices</div>
+          <div className="grid-3" style={{marginBottom:24}}>
+            {['crypto','stocks','forex'].map(mkt => (
+              <div className="card" key={mkt}>
+                <div style={{fontFamily:'var(--mono)',fontSize:10,color:'var(--muted)',letterSpacing:2,textTransform:'uppercase',marginBottom:12}}>
+                  {mkt}
+                </div>
+                {(prices[mkt] || []).map(p => (
+                  <div key={p.symbol} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:'1px solid var(--border)'}}>
+                    <span className="mono" style={{fontWeight:700,fontSize:13}}>{p.symbol}</span>
+                    <div style={{textAlign:'right'}}>
+                      <div className="mono" style={{fontSize:13}}>{fmtUSD(p.price)}</div>
+                      {p.change_24h != null && (
+                        <div className={`mono ${p.change_24h >= 0 ? 'pnl pos' : 'pnl neg'}`} style={{fontSize:11}}>
+                          {fmtPct(p.change_24h)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {(!prices[mkt] || prices[mkt].length === 0) && (
+                  <div className="empty" style={{padding:'16px 0'}}>Fetching...</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* ── Controls ── */}
+      <div style={{ display:'flex', gap:12, alignItems:'center', marginBottom:16, flexWrap:'wrap' }}>
+        <select
+          value={selected?.apiSymbol ?? ''}
+          onChange={e => setSelected(chartSymbols.find(s => s.apiSymbol === e.target.value))}
+        >
+          {chartSymbols.map(s => (
+            <option key={s.apiSymbol} value={s.apiSymbol}>{s.label}</option>
+          ))}
+        </select>
+        <div className="tabs" style={{ marginBottom:0 }}>
+          {['line','candle'].map(m => (
+            <button key={m} className={`tab ${mode===m?'active':''}`} onClick={() => setMode(m)}>{m}</button>
+          ))}
+        </div>
+        <button className="btn btn-secondary" onClick={() => fetchChart(selected)} disabled={loading}>
+          {loading ? '⟳ Loading...' : '↺ Refresh'}
+        </button>
+      </div>
+
+      {error && (
+        <div style={{ color:'var(--danger)', fontFamily:'var(--mono)', fontSize:12, marginBottom:16 }}>
+          Error: {error}
+        </div>
+      )}
+
+      {loading && !chartData && (
+        <div style={{ display:'flex', alignItems:'center', gap:12, padding:'40px 0' }}>
+          <div className="spinner" />
+          <span style={{ color:'var(--muted)', fontFamily:'var(--mono)', fontSize:12 }}>LOADING CHART DATA...</span>
+        </div>
+      )}
+
+      {chartData && (
+        <>
+          {/* ── Indicator Summary Row ── */}
+          <div style={{
+            display:'flex', gap:16, alignItems:'center', flexWrap:'wrap',
+            background:'var(--surface)', border:'1px solid var(--border)',
+            borderRadius:8, padding:'10px 16px', marginBottom:16,
+          }}>
+            {/* RSI */}
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:1 }}>RSI</span>
+              <span style={{ fontFamily:'var(--mono)', fontSize:13, fontWeight:700, color: rsiColor }}>
+                {latestRsi != null ? latestRsi.toFixed(1) : '—'}
+              </span>
+              <Badge
+                label={rsiCond === 'overbought' ? 'Overbought' : rsiCond === 'oversold' ? 'Oversold' : 'Neutral'}
+                color={rsiColor}
+              />
+            </div>
+            <span style={{ color:'var(--border)', fontSize:16 }}>|</span>
+            {/* MACD */}
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:1 }}>MACD</span>
+              <Badge
+                label={macdSig === 'bullish' ? 'Bullish Cross' : macdSig === 'bearish' ? 'Bearish Cross' : '—'}
+                color={macdColor}
+              />
+            </div>
+            <span style={{ color:'var(--border)', fontSize:16 }}>|</span>
+            {/* Kronos */}
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:1 }}>KRONOS</span>
+              {confidence != null ? (
+                <>
+                  <span style={{ fontFamily:'var(--mono)', fontSize:13, fontWeight:700, color: konfColor }}>
+                    {confidence}%
+                  </span>
+                  <Badge label={confidence >= 55 ? 'Bullish' : 'Bearish'} color={konfColor} />
+                </>
+              ) : (
+                <span style={{ fontFamily:'var(--mono)', fontSize:12, color:'var(--muted)' }}>No prediction</span>
+              )}
+            </div>
+          </div>
+
+          {/* ── Price Chart ── */}
+          <div className="section-label">{selected?.label} — Price History + Prediction</div>
+          <div className="card" style={{ padding:'20px 8px', marginBottom:8 }}>
+            <ResponsiveContainer width="100%" height={300}>
+              <ComposedChart data={points} margin={{ top:10, right:20, left:10, bottom:10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis dataKey="time" tickFormatter={tickFmt}
+                       tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
+                       interval="preserveStartEnd" />
+                <YAxis tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
+                       width={90} tickFormatter={v => fmtUSD(v)} domain={['auto','auto']} />
+                <Tooltip contentStyle={ttContent} labelFormatter={ttLabel}
+                         formatter={(val, name) => [fmtUSD(val), name === 'actual' ? 'Actual' : 'Predicted']} />
+                <Legend formatter={v => v === 'actual' ? 'Actual' : 'Predicted'}
+                        wrapperStyle={{ fontFamily:'var(--mono)', fontSize:11 }} />
+                {nowTime && (
+                  <ReferenceLine x={nowTime} stroke="var(--warn)" strokeDasharray="5 3"
+                    label={{ value:'NOW', fill:'var(--warn)', fontSize:10, fontFamily:'var(--mono)', position:'top' }} />
+                )}
+                <Line type="monotone" dataKey="actual"    stroke="var(--success)" strokeWidth={2} dot={false} connectNulls={false} name="actual" />
+                <Line type="monotone" dataKey="predicted" stroke="var(--accent2)" strokeWidth={2} strokeDasharray="6 3" dot={false} connectNulls={false} name="predicted" />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* ── High / Low Range (candle mode) ── */}
+          {mode === 'candle' && (
+            <>
+              <div className="section-label" style={{ marginTop:16 }}>High / Low Range</div>
+              <div className="card" style={{ padding:'20px 8px', marginBottom:8 }}>
+                <ResponsiveContainer width="100%" height={160}>
+                  <ComposedChart data={points} margin={{ top:10, right:20, left:10, bottom:10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                    <XAxis dataKey="time" tickFormatter={tickFmt}
+                           tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
+                           interval="preserveStartEnd" />
+                    <YAxis tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
+                           width={90} tickFormatter={v => fmtUSD(v)} domain={['auto','auto']} />
+                    <Tooltip contentStyle={ttContent} labelFormatter={ttLabel}
+                             formatter={(val, name) => [fmtUSD(val), name]} />
+                    <Legend wrapperStyle={{ fontFamily:'var(--mono)', fontSize:11 }} />
+                    {nowTime && <ReferenceLine x={nowTime} stroke="var(--warn)" strokeDasharray="5 3" />}
+                    <Line type="monotone" dataKey="high"     stroke="#ff9500"              strokeWidth={1.5} dot={false} name="High" />
+                    <Line type="monotone" dataKey="low"      stroke="var(--muted)"         strokeWidth={1.5} dot={false} name="Low" />
+                    <Line type="monotone" dataKey="predHigh" stroke="rgba(0,136,255,0.75)" strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="Pred High" />
+                    <Line type="monotone" dataKey="predLow"  stroke="rgba(0,136,255,0.4)"  strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="Pred Low" />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </>
+          )}
+
+          {/* ── RSI Chart ── */}
+          {(chartData.rsi || []).length > 0 && (
+            <>
+              <div className="section-label" style={{ marginTop:16 }}>
+                RSI (14)
+                <span style={{ marginLeft:8, fontSize:11, fontWeight:400, color: rsiColor }}>
+                  {latestRsi != null ? `${latestRsi.toFixed(1)} — ${rsiCond.charAt(0).toUpperCase() + rsiCond.slice(1)}` : ''}
+                </span>
+              </div>
+              <div className="card" style={{ padding:'16px 8px', marginBottom:8 }}>
+                <ResponsiveContainer width="100%" height={120}>
+                  <ComposedChart data={chartData.rsi} margin={{ top:4, right:20, left:10, bottom:4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                    <XAxis dataKey="time" tickFormatter={tickFmt}
+                           tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
+                           interval="preserveStartEnd" />
+                    <YAxis domain={[0, 100]} ticks={[0, 30, 50, 70, 100]}
+                           tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
+                           width={36} />
+                    <Tooltip contentStyle={ttContent} labelFormatter={ttLabel}
+                             formatter={v => [v.toFixed(1), 'RSI']} />
+                    {/* Zone shading */}
+                    <ReferenceArea y1={70} y2={100} fill="rgba(255,59,92,0.08)" />
+                    <ReferenceArea y1={0}  y2={30}  fill="rgba(0,229,160,0.08)" />
+                    {/* Zone lines */}
+                    <ReferenceLine y={70} stroke="var(--danger)"  strokeDasharray="4 3" strokeWidth={1}
+                      label={{ value:'70', fill:'var(--danger)', fontSize:9, fontFamily:'var(--mono)', position:'insideTopRight' }} />
+                    <ReferenceLine y={30} stroke="var(--success)" strokeDasharray="4 3" strokeWidth={1}
+                      label={{ value:'30', fill:'var(--success)', fontSize:9, fontFamily:'var(--mono)', position:'insideBottomRight' }} />
+                    <Line type="monotone" dataKey="value" stroke="var(--text)" strokeWidth={1.5}
+                          dot={false} name="RSI" />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </>
+          )}
+
+          {/* ── MACD Chart ── */}
+          {(chartData.macd || []).length > 0 && (
+            <>
+              <div className="section-label" style={{ marginTop:16 }}>
+                MACD (12, 26, 9)
+                <span style={{ marginLeft:8, fontSize:11, fontWeight:400, color: macdColor }}>
+                  {macdSig ? (macdSig === 'bullish' ? '▲ Bullish Cross' : '▼ Bearish Cross') : ''}
+                </span>
+              </div>
+              <div className="card" style={{ padding:'16px 8px', marginBottom:8 }}>
+                <ResponsiveContainer width="100%" height={140}>
+                  <ComposedChart data={chartData.macd} margin={{ top:4, right:20, left:10, bottom:4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                    <XAxis dataKey="time" tickFormatter={tickFmt}
+                           tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
+                           interval="preserveStartEnd" />
+                    <YAxis tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
+                           width={60} domain={['auto','auto']} />
+                    <Tooltip contentStyle={ttContent} labelFormatter={ttLabel}
+                             formatter={(v, n) => [v.toFixed(4), n]} />
+                    <Legend wrapperStyle={{ fontFamily:'var(--mono)', fontSize:11 }} />
+                    <ReferenceLine y={0} stroke="var(--muted)" strokeWidth={1} />
+                    {/* Histogram bars — green if positive, red if negative */}
+                    <Bar dataKey="histogram" name="Histogram" maxBarSize={6}>
+                      {chartData.macd.map((entry, i) => (
+                        <Cell key={i}
+                          fill={entry.histogram >= 0 ? 'rgba(0,229,160,0.7)' : 'rgba(255,59,92,0.7)'} />
+                      ))}
+                    </Bar>
+                    <Line type="monotone" dataKey="macd"   stroke="var(--accent2)" strokeWidth={1.5} dot={false} name="MACD" />
+                    <Line type="monotone" dataKey="signal" stroke="#f5a623"         strokeWidth={1.5} dot={false} name="Signal" />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ===============================================
+// ACCURACY TAB
+// ===============================================
+function AccuracyTab() {
+  const [hours, setHours]     = useState(24);
+  const [data, setData]       = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [predPage, setPredPage] = useState(0);
+
+  // Reset page when range changes
+  const changeHours = h => { setHours(h); setPredPage(0); };
+
+  const fetchAccuracy = useCallback(async (h) => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API}/api/accuracy?hours=${h}`);
+      const d = await r.json();
+      setData(d);
+    } catch(e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchAccuracy(hours); }, [hours]);
+
+  // Aggregate by symbol for bar chart (average predicted vs actual)
+  const barData = useMemo(() => {
+    if (!data?.predictions?.length) return [];
+    const bySymbol = {};
+    for (const p of data.predictions) {
+      if (!bySymbol[p.symbol]) bySymbol[p.symbol] = { predicted: [], actual: [] };
+      bySymbol[p.symbol].predicted.push(p.predicted_close);
+      bySymbol[p.symbol].actual.push(p.actual_price);
+    }
+    return Object.entries(bySymbol).map(([sym, v]) => ({
+      symbol:          sym.replace('/USDT','').replace('/',''),
+      predicted_close: Math.round(v.predicted.reduce((a,b) => a+b,0) / v.predicted.length * 100) / 100,
+      actual_price:    Math.round(v.actual.reduce((a,b) => a+b,0) / v.actual.length * 100) / 100,
+    }));
+  }, [data]);
+
+  return (
+    <div>
+      {/* Time range */}
+      <div style={{ display:'flex', gap:12, alignItems:'center', marginBottom:20 }}>
+        <span style={{ fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)', letterSpacing:2 }}>RANGE:</span>
+        <div className="tabs" style={{ marginBottom:0 }}>
+          {[6,12,24,48].map(h => (
+            <button key={h} className={`tab ${hours===h?'active':''}`} onClick={() => changeHours(h)}>
+              {h}h
+            </button>
+          ))}
+        </div>
+        {loading && <div className="spinner" style={{ width:16, height:16 }} />}
+      </div>
+
+      {data && (
+        <>
+          {/* Stat cards */}
+          <div className="grid-3" style={{ marginBottom:24 }}>
+            <div className="stat-card">
+              <div className="stat-label">Direction Accuracy</div>
+              <div className="stat-value" style={{ color: data.direction_accuracy >= 55 ? 'var(--success)' : 'var(--warn)' }}>
+                {data.direction_accuracy}%
+              </div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Avg Price Error</div>
+              <div className="stat-value" style={{ color: data.avg_error_pct < 3 ? 'var(--success)' : 'var(--warn)' }}>
+                {data.avg_error_pct}%
+              </div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Predictions Tracked</div>
+              <div className="stat-value" style={{ color:'var(--accent2)' }}>
+                {data.total}
+              </div>
+            </div>
+          </div>
+
+          {/* Bar chart */}
+          {barData.length > 0 && (
+            <>
+              <div className="section-label">Avg Predicted vs Actual Price by Symbol</div>
+              <div className="card" style={{ padding:'20px 8px', marginBottom:24 }}>
+                <ResponsiveContainer width="100%" height={240}>
+                  <BarChart data={barData} margin={{ top:10, right:20, left:10, bottom:10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                    <XAxis dataKey="symbol" tick={{ fontSize:11, fill:'var(--muted)', fontFamily:'var(--mono)' }} />
+                    <YAxis
+                      tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
+                      width={90} tickFormatter={v => fmtUSD(v)}
+                    />
+                    <Tooltip
+                      contentStyle={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8, fontFamily:'var(--mono)', fontSize:11 }}
+                      formatter={(val, name) => [fmtUSD(val), name === 'predicted_close' ? 'Predicted' : 'Actual']}
+                    />
+                    <Legend
+                      formatter={v => v === 'predicted_close' ? 'Predicted' : 'Actual'}
+                      wrapperStyle={{ fontFamily:'var(--mono)', fontSize:11 }}
+                    />
+                    <Bar dataKey="predicted_close" fill="rgba(0,136,255,0.7)"  radius={[4,4,0,0]} name="predicted_close" />
+                    <Bar dataKey="actual_price"    fill="rgba(0,229,160,0.7)"  radius={[4,4,0,0]} name="actual_price" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </>
+          )}
+
+          {/* Prediction log */}
+          <div className="section-label">Prediction Log</div>
+          <div className="card">
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>When</th>
+                    <th>At Pred</th>
+                    <th>Predicted</th>
+                    <th>Actual</th>
+                    <th>Error %</th>
+                    <th>Direction</th>
+                    <th>Confidence</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.predictions
+                    .slice(predPage * OVERVIEW_PAGE_SIZE, (predPage + 1) * OVERVIEW_PAGE_SIZE)
+                    .map(p => (
+                    <tr key={p.id}>
+                      <td className="mono">{p.symbol}</td>
+                      <td style={{ fontSize:11, color:'var(--muted)' }}>{ago(p.predicted_at)}</td>
+                      <td className="mono">{fmtUSD(p.price_at_prediction)}</td>
+                      <td className="mono">{fmtUSD(p.predicted_close)}</td>
+                      <td className="mono">{fmtUSD(p.actual_price)}</td>
+                      <td className={`mono ${p.error_pct != null && Math.abs(p.error_pct) < 3 ? 'pnl pos' : 'pnl neg'}`}>
+                        {p.error_pct != null ? `${p.error_pct > 0 ? '+' : ''}${p.error_pct}%` : '—'}
+                      </td>
+                      <td style={{ textAlign:'center', fontSize:16 }}>
+                        {p.direction_correct === null ? '—' : p.direction_correct
+                          ? <span style={{ color:'var(--success)' }}>✓</span>
+                          : <span style={{ color:'var(--danger)' }}>✗</span>
+                        }
+                      </td>
+                      <td className="mono" style={{ color: p.confidence >= 55 ? 'var(--success)' : 'var(--danger)' }}>
+                        {p.confidence}%
+                      </td>
+                    </tr>
+                  ))}
+                  {data.predictions.length === 0 && (
+                    <tr>
+                      <td colSpan={8}>
+                        <div className="empty">No predictions tracked for this time range</div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <Pagination
+              page={predPage} total={data.predictions.length}
+              pageSize={OVERVIEW_PAGE_SIZE} onChange={setPredPage}
+            />
+          </div>
+        </>
+      )}
+
+      {!data && !loading && (
+        <div className="card"><div className="empty">No accuracy data available</div></div>
+      )}
+    </div>
+  );
+}
+
+// ---- Discord test button (self-contained to avoid prop threading) ----
+function TestDiscordButton() {
+  const [status, setStatus] = useState(null);   // null | 'sending' | 'ok' | 'fail'
+
+  const test = async () => {
+    setStatus('sending');
+    try {
+      const r = await fetch(`${API}/api/notifications/test`, { method: 'POST' });
+      const d = await r.json();
+      setStatus(d.success ? 'ok' : 'fail');
+      setTimeout(() => setStatus(null), 5000);
+    } catch {
+      setStatus('fail');
+      setTimeout(() => setStatus(null), 5000);
+    }
+  };
+
+  const label = {
+    null:      '▶ Send Test Message',
+    sending:   '⟳ Sending...',
+    ok:        '✓ Message sent!',
+    fail:      '✗ Failed — check URL',
+  }[status];
+
+  const color = status === 'ok'   ? 'var(--success)'
+              : status === 'fail' ? 'var(--danger)'
+              : undefined;
+
+  return (
+    <button
+      className="btn btn-secondary"
+      onClick={test}
+      disabled={status === 'sending'}
+      style={color ? { color, borderColor: color } : {}}
+    >
+      {label}
+    </button>
+  );
+}
+
+
+// ===============================================
+// SYMBOLS TAB
+// ===============================================
+function Toggle({ on, onChange }) {
+  return (
+    <div
+      onClick={onChange}
+      style={{
+        width:36, height:20, borderRadius:10, cursor:'pointer', flexShrink:0,
+        background: on ? 'var(--success)' : 'var(--border2)',
+        position:'relative', transition:'background 0.2s',
+      }}
+    >
+      <div style={{
+        position:'absolute', top:2, width:16, height:16, borderRadius:'50%',
+        background:'#fff', left: on ? 18 : 2, transition:'left 0.2s',
+      }} />
+    </div>
+  );
+}
+
+function SymbolsTab() {
+  const [settings, setSettings] = useState(null);
+  const [original, setOriginal] = useState(null);
+  const [saving, setSaving]     = useState(false);
+  const [saved,  setSaved]      = useState(false);
+  const [newSym, setNewSym]     = useState({ crypto:'', stocks:'', forex:'' });
+
+  useEffect(() => {
+    fetch(`${API}/api/settings`)
+      .then(r => r.json())
+      .then(d => { setSettings(d); setOriginal(d); })
+      .catch(console.error);
+  }, []);
+
+  const isDirty = settings && original && JSON.stringify(settings) !== JSON.stringify(original);
+
+  if (!settings) return (
+    <div style={{ display:'flex', alignItems:'center', gap:12, padding:'40px 0' }}>
+      <div className="spinner" />
+      <span style={{ color:'var(--muted)', fontFamily:'var(--mono)', fontSize:12 }}>LOADING...</span>
+    </div>
+  );
+
+  const disabled = new Set(settings.disabled_symbols || []);
+
+  const isEnabled = sym => !disabled.has(sym);
+
+  const toggleSym = sym => {
+    const next = new Set(disabled);
+    if (next.has(sym)) next.delete(sym); else next.add(sym);
+    setSettings(s => ({ ...s, disabled_symbols: [...next] }));
+  };
+
+  const removeSym = (market, sym) => setSettings(s => {
+    const syms     = s.symbols[market].filter(x => x !== sym);
+    const disabled = (s.disabled_symbols || []).filter(x => x !== sym);
+    return { ...s, symbols: { ...s.symbols, [market]: syms }, disabled_symbols: disabled };
+  });
+
+  const addSym = (market) => {
+    const sym = newSym[market].trim().toUpperCase();
+    if (!sym || settings.symbols[market]?.includes(sym)) return;
+    setSettings(s => ({ ...s, symbols: { ...s.symbols, [market]: [...(s.symbols[market] || []), sym] } }));
+    setNewSym(n => ({ ...n, [market]:'' }));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await fetch(`${API}/api/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify(settings),
+      });
+      setOriginal(settings);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch(e) { console.error(e); }
+    finally { setSaving(false); }
+  };
+
+  const markets = [
+    { key:'crypto', label:'Crypto',  placeholder:'e.g. SOL/USDT' },
+    { key:'stocks', label:'Stocks',  placeholder:'e.g. MSFT'     },
+    { key:'forex',  label:'Forex',   placeholder:'e.g. AUD_USD'  },
+  ];
+
+  return (
+    <div>
+      {isDirty && (
+        <div style={{
+          display:'flex', alignItems:'center', gap:12,
+          background:'var(--surface)', border:'1px solid var(--accent)',
+          borderRadius:8, padding:'10px 16px', marginBottom:20,
+        }}>
+          <span style={{ flex:1, fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)' }}>
+            Unsaved changes
+          </span>
+          <button className="btn btn-primary" onClick={save} disabled={saving} style={{ minWidth:120 }}>
+            {saving ? '⟳ Saving...' : '▶ Save'}
+          </button>
+          {saved && <span style={{ fontFamily:'var(--mono)', fontSize:12, color:'var(--success)' }}>✓ Saved</span>}
+        </div>
+      )}
+      <div className="section-label" style={{ marginTop: isDirty ? 0 : undefined }}>Symbol Management</div>
+      <div style={{ fontSize:11, color:'var(--muted)', fontFamily:'var(--mono)', marginBottom:16, lineHeight:1.6 }}>
+        Toggle a symbol off to skip it during prediction and trading runs.
+        Disabled symbols still appear in charts and history.
+      </div>
+
+      {markets.map(({ key, label, placeholder }) => (
+        <div className="card" style={{ marginBottom:16 }} key={key}>
+          <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:2, marginBottom:14, textTransform:'uppercase' }}>
+            {label}
+          </div>
+
+          {/* Symbol rows */}
+          {(settings.symbols[key] || []).length === 0 && (
+            <div style={{ fontSize:12, color:'var(--muted)', fontFamily:'var(--mono)', marginBottom:14 }}>No symbols added</div>
+          )}
+          {(settings.symbols[key] || []).map(sym => (
+            <div key={sym} style={{
+              display:'flex', alignItems:'center', justifyContent:'space-between',
+              padding:'10px 0', borderBottom:'1px solid var(--border)',
+            }}>
+              <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+                <Toggle on={isEnabled(sym)} onChange={() => toggleSym(sym)} />
+                <div>
+                  <div className="mono" style={{ fontWeight:700, fontSize:13,
+                    color: isEnabled(sym) ? 'var(--text)' : 'var(--muted)',
+                  }}>{sym}</div>
+                  <div style={{ fontSize:10, color:'var(--muted)', fontFamily:'var(--mono)', marginTop:2 }}>
+                    {isEnabled(sym) ? 'Trading enabled' : 'Disabled — skipped'}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => removeSym(key, sym)}
+                style={{
+                  background:'none', border:'1px solid var(--border)', color:'var(--muted)',
+                  borderRadius:4, padding:'2px 8px', cursor:'pointer', fontSize:12,
+                  fontFamily:'var(--mono)',
+                }}
+              >remove</button>
+            </div>
+          ))}
+
+          {/* Add symbol row */}
+          <div style={{ display:'flex', gap:8, marginTop:14 }}>
+            <input
+              type="text"
+              className="settings-input"
+              placeholder={placeholder}
+              value={newSym[key]}
+              onChange={e => setNewSym(n => ({ ...n, [key]: e.target.value }))}
+              onKeyDown={e => e.key === 'Enter' && addSym(key)}
+              style={{ flex:1 }}
+            />
+            <button className="btn btn-secondary" onClick={() => addSym(key)}>+ Add</button>
+          </div>
+        </div>
+      ))}
+
+    </div>
+  );
+}
+
+
+// ===============================================
+// SETTINGS TAB
+// ===============================================
+function SettingsTab() {
+  const [settings, setSettings]   = useState(null);
+  const [original, setOriginal]   = useState(null);
+  const [saving, setSaving]       = useState(false);
+  const [saved, setSaved]         = useState(false);
+  useEffect(() => {
+    fetch(`${API}/api/settings`)
+      .then(r => r.json())
+      .then(d => { setSettings(d); setOriginal(d); })
+      .catch(console.error);
+  }, []);
+
+  const isDirty = settings && original && JSON.stringify(settings) !== JSON.stringify(original);
+
+  // Model config helpers
+  const getModel = key => settings?.models?.[key];
+  const setModel = (key, val) => setSettings(s => ({
+    ...s, models: { ...(s.models || { active_model:'small', dual_model_mode:true }), [key]: val },
+  }));
+
+  // Risk values stored as decimals (0.10 = 10%), display as %
+  const getRiskPct = key => Math.round((settings?.risk?.[key] || 0) * 10000) / 100;
+  const setRiskPct = (key, val) => setSettings(s => ({
+    ...s,
+    risk: { ...s.risk, [key]: parseFloat(val) / 100 },
+  }));
+
+  const getPred = key => settings?.prediction?.[key] ?? 0;
+  const setPred = (key, val) => setSettings(s => ({
+    ...s,
+    prediction: { ...s.prediction, [key]: parseFloat(val) || 0 },
+  }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await fetch(`${API}/api/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify(settings),
+      });
+      setOriginal(settings);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch(e) {
+      console.error(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!settings) return (
+    <div style={{ display:'flex', alignItems:'center', gap:12, padding:'40px 0' }}>
+      <div className="spinner" />
+      <span style={{ color:'var(--muted)', fontFamily:'var(--mono)', fontSize:12 }}>LOADING SETTINGS...</span>
+    </div>
+  );
+
+  return (
+    <div>
+      {isDirty && (
+        <div style={{
+          display:'flex', alignItems:'center', gap:12,
+          background:'var(--surface)', border:'1px solid var(--accent)',
+          borderRadius:8, padding:'10px 16px', marginBottom:20,
+        }}>
+          <span style={{ flex:1, fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)' }}>
+            Unsaved changes
+          </span>
+          <button className="btn btn-primary" onClick={save} disabled={saving} style={{ minWidth:120 }}>
+            {saving ? '⟳ Saving...' : '▶ Save Settings'}
+          </button>
+          {saved && <span style={{ fontFamily:'var(--mono)', fontSize:12, color:'var(--success)' }}>✓ Saved</span>}
+        </div>
+      )}
+
+      {/* Risk Management */}
+      <div className="section-label">Risk Management</div>
+      <div className="card" style={{ marginBottom:16 }}>
+        <div className="grid-2">
+          {[
+            ['Position Size', 'position_size_pct'],
+            ['Min Confidence', 'min_confidence'],
+            ['Min Predicted Move', 'min_predicted_move_pct'],
+            ['Stop Loss', 'stop_loss_pct'],
+            ['Take Profit', 'take_profit_pct'],
+          ].map(([label, key]) => (
+            <div key={key} style={{ marginBottom:8 }}>
+              <label style={{ display:'block', fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:2, marginBottom:8 }}>
+                {label.toUpperCase()} (%)
+              </label>
+              <input
+                type="number"
+                className="settings-input"
+                value={getRiskPct(key)}
+                onChange={e => setRiskPct(key, e.target.value)}
+                step="0.1" min="0" max="100"
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Prediction Engine */}
+      <div className="section-label">Prediction Engine</div>
+      <div className="card" style={{ marginBottom:16 }}>
+        <div className="grid-2">
+          {[
+            ['Interval (minutes)', 'interval_minutes'],
+            ['Horizon (hours)',    'horizon_hours'],
+            ['Sample Count',       'sample_count'],
+            ['Lookback Candles',   'lookback_candles'],
+          ].map(([label, key]) => (
+            <div key={key} style={{ marginBottom:8 }}>
+              <label style={{ display:'block', fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:2, marginBottom:8 }}>
+                {label.toUpperCase()}
+              </label>
+              <input
+                type="number"
+                className="settings-input"
+                value={getPred(key)}
+                onChange={e => setPred(key, e.target.value)}
+                step="1" min="1"
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Model Configuration */}
+      <div className="section-label">Model Configuration</div>
+      <div className="card" style={{ marginBottom:16 }}>
+
+        {/* Dual mode toggle */}
+        <div style={{ marginBottom:20 }}>
+          <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:2, marginBottom:10 }}>
+            DUAL MODEL MODE
+          </div>
+          <label style={{ display:'flex', alignItems:'center', gap:12, cursor:'pointer' }}>
+            <div
+              onClick={() => setModel('dual_model_mode', !getModel('dual_model_mode'))}
+              style={{
+                width:40, height:22, borderRadius:11, cursor:'pointer',
+                background: getModel('dual_model_mode') ? 'var(--success)' : 'var(--border2)',
+                position:'relative', transition:'background 0.2s', flexShrink:0,
+              }}
+            >
+              <div style={{
+                position:'absolute', top:3, borderRadius:'50%',
+                width:16, height:16, background:'#fff',
+                left: getModel('dual_model_mode') ? 21 : 3,
+                transition:'left 0.2s',
+              }} />
+            </div>
+            <span style={{ fontFamily:'var(--mono)', fontSize:12, color:'var(--text)' }}>
+              {getModel('dual_model_mode') ? 'Both models run on every prediction' : 'Single model only'}
+            </span>
+          </label>
+          <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', marginTop:8, lineHeight:1.6 }}>
+            When enabled, Kronos-small and Kronos-mini both run on every cycle.
+            Trades execute only from the active model below.
+          </div>
+        </div>
+
+        {/* Active model selector */}
+        <div style={{ marginBottom:20 }}>
+          <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:2, marginBottom:12 }}>
+            ACTIVE MODEL (executes trades)
+          </div>
+          <div style={{ display:'flex', gap:12 }}>
+            {[
+              { id:'small', label:'Kronos-small', params:'24.7M params', context:'512 ctx', color:'var(--accent2)' },
+              { id:'mini',  label:'Kronos-mini',  params:'4.1M params',  context:'2048 ctx', color:'#a855f7' },
+            ].map(m => {
+              const active = getModel('active_model') === m.id;
+              return (
+                <div
+                  key={m.id}
+                  onClick={() => setModel('active_model', m.id)}
+                  style={{
+                    flex:1, padding:'14px 16px', borderRadius:10, cursor:'pointer',
+                    border: `2px solid ${active ? m.color : 'var(--border)'}`,
+                    background: active ? `${m.color}11` : 'var(--bg)',
+                    transition:'all 0.15s',
+                  }}
+                >
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:8 }}>
+                    <span style={{ fontFamily:'var(--mono)', fontSize:13, fontWeight:700, color: active ? m.color : 'var(--text)' }}>
+                      {m.label}
+                    </span>
+                    {active && (
+                      <span style={{
+                        fontFamily:'var(--mono)', fontSize:9, fontWeight:700, letterSpacing:1,
+                        background: `${m.color}22`, color: m.color,
+                        border: `1px solid ${m.color}44`,
+                        borderRadius:4, padding:'1px 6px',
+                      }}>ACTIVE</span>
+                    )}
+                  </div>
+                  <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', lineHeight:1.8 }}>
+                    <div>{m.params}</div>
+                    <div>{m.context}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Symbol Management — moved to its own tab */}
+
+      {/* Notifications */}
+      <div className="section-label">Notifications</div>
+      <div className="card" style={{ marginBottom:16 }}>
+
+        {/* Enable toggle */}
+        <div style={{ marginBottom:18 }}>
+          <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:2, marginBottom:10 }}>
+            DISCORD NOTIFICATIONS
+          </div>
+          <label style={{ display:'flex', alignItems:'center', gap:12, cursor:'pointer' }}>
+            <div
+              onClick={() => setSettings(s => ({
+                ...s,
+                notifications: { ...s.notifications, discord_enabled: !s.notifications?.discord_enabled }
+              }))}
+              style={{
+                width:40, height:22, borderRadius:11, cursor:'pointer',
+                background: settings.notifications?.discord_enabled ? 'var(--success)' : 'var(--border2)',
+                position:'relative', transition:'background 0.2s', flexShrink:0,
+              }}
+            >
+              <div style={{
+                position:'absolute', top:3, borderRadius:'50%',
+                width:16, height:16, background:'#fff',
+                left: settings.notifications?.discord_enabled ? 21 : 3,
+                transition:'left 0.2s',
+              }} />
+            </div>
+            <span style={{ fontFamily:'var(--mono)', fontSize:12, color:'var(--text)' }}>
+              {settings.notifications?.discord_enabled ? 'Enabled' : 'Disabled'}
+            </span>
+          </label>
+        </div>
+
+        {/* Webhook URL */}
+        <div style={{ marginBottom:18 }}>
+          <label style={{ display:'block', fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:2, marginBottom:8 }}>
+            DISCORD WEBHOOK URL
+          </label>
+          <input
+            type="text"
+            className="settings-input"
+            placeholder="https://discord.com/api/webhooks/..."
+            value={settings.notifications?.discord_webhook_url ?? ''}
+            onChange={e => setSettings(s => ({
+              ...s,
+              notifications: { ...s.notifications, discord_webhook_url: e.target.value }
+            }))}
+          />
+        </div>
+
+        {/* Test button */}
+        <TestDiscordButton />
+      </div>
+
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
