@@ -509,6 +509,70 @@
   /* Push page content above the bar — 36px single row, 72px two rows */
   .main { padding-bottom: 52px; }
 
+  /* Sell modal */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(3px);
+    z-index: 400;
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 14px;
+    padding: 28px;
+    max-width: 440px; width: 100%;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+  }
+  .modal-title {
+    font-family: var(--mono); font-size: 13px; font-weight: 700;
+    color: var(--text); margin-bottom: 16px; letter-spacing: 0.5px;
+  }
+  .modal-row {
+    display: flex; justify-content: space-between;
+    font-family: var(--mono); font-size: 12px;
+    padding: 6px 0; border-bottom: 1px solid var(--border);
+  }
+  .modal-row:last-of-type { border-bottom: none; }
+  .modal-label { color: var(--muted); }
+  .modal-actions { display: flex; gap: 10px; margin-top: 20px; }
+  .btn-danger {
+    background: var(--danger); color: #fff;
+    border: none; flex:1;
+  }
+  .btn-danger:hover { filter: brightness(1.1); }
+  .btn-danger:disabled { opacity: 0.5; cursor: not-allowed; filter: none; }
+
+  /* Toast */
+  .toast {
+    position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%);
+    z-index: 500;
+    padding: 12px 24px; border-radius: 8px;
+    font-family: var(--mono); font-size: 12px; font-weight: 700;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    white-space: nowrap;
+    animation: toastIn 0.25s ease;
+  }
+  @keyframes toastIn {
+    from { opacity:0; transform: translateX(-50%) translateY(12px); }
+    to   { opacity:1; transform: translateX(-50%) translateY(0); }
+  }
+  .toast-success { background: rgba(0,229,160,0.15); border:1px solid var(--success); color: var(--success); }
+  .toast-error   { background: rgba(255,59,92,0.15);  border:1px solid var(--danger);  color: var(--danger); }
+  .toast-warn    { background: rgba(255,107,53,0.15); border:1px solid var(--warn);    color: var(--warn); }
+
+  /* Sell Now button in table */
+  .btn-sell {
+    padding: 4px 10px; border-radius: 6px; border: 1px solid var(--danger);
+    background: transparent; color: var(--danger);
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.5px;
+    cursor: pointer; transition: all 0.15s; white-space: nowrap;
+  }
+  .btn-sell:hover { background: rgba(255,59,92,0.1); }
+  .btn-sell:disabled { opacity: 0.3; cursor: not-allowed; }
+
   /* Mobile bottom tab bar */
   .mobile-nav {
     display: none;
@@ -679,6 +743,7 @@ function App() {
             { id:'predictions', icon:'◎', label:'Predictions' },
             { id:'charts',      icon:'╱╲', label:'Charts'     },
             { id:'symbols',     icon:'◫', label:'Symbols'     },
+            { id:'audit',       icon:'◉', label:'Audit'       },
             { id:'settings',    icon:'⚙', label:'Settings'    },
           ].map(({ id, icon, label }) => (
             <button
@@ -723,7 +788,7 @@ function App() {
           { id:'overview',    icon:'◈', label:'Home'        },
           { id:'predictions', icon:'◎', label:'Predictions' },
           { id:'charts',      icon:'▲', label:'Charts'      },
-          { id:'symbols',     icon:'◫', label:'Symbols'     },
+          { id:'audit',       icon:'◉', label:'Audit'       },
           { id:'settings',    icon:'⚙', label:'Settings'    },
         ].map(({ id, icon, label }) => (
           <button
@@ -749,7 +814,7 @@ function App() {
           <>
             {/* ---- OVERVIEW TAB ---- */}
             {tab === 'overview' && overview && (
-              <OverviewTab overview={overview} trades={trades} scheduler={scheduler} />
+              <OverviewTab overview={overview} trades={trades} scheduler={scheduler} onTradesRefresh={fetchAll} />
             )}
 
 
@@ -909,6 +974,9 @@ function App() {
             {/* ---- SYMBOLS TAB ---- */}
             {tab === 'symbols' && <SymbolsTab />}
 
+            {/* ---- AUDIT TAB ---- */}
+            {tab === 'audit' && <AuditTab />}
+
             {/* ---- SETTINGS TAB ---- */}
             {tab === 'settings' && <SettingsTab />}
           </>
@@ -1019,12 +1087,88 @@ function Pagination({ page, total, pageSize, onChange }) {
   );
 }
 
+// ---- Toast ----
+function Toast({ msg, type, onDone }) {
+  useEffect(() => {
+    const t = setTimeout(onDone, 4000);
+    return () => clearTimeout(t);
+  }, []);
+  return (
+    <div className={`toast toast-${type}`}>
+      {msg}
+    </div>
+  );
+}
+
+// ---- Sell Confirmation Modal ----
+function SellModal({ trade, onClose, onConfirm, selling }) {
+  const [reason, setReason] = React.useState('');
+  return (
+    <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal">
+        <div className="modal-title">Close Position — {trade.symbol}</div>
+        <div className="modal-row">
+          <span className="modal-label">Entry Price</span>
+          <span className="mono">{fmtUSD(trade.price)}</span>
+        </div>
+        <div className="modal-row">
+          <span className="modal-label">Position Value</span>
+          <span className="mono">{fmtUSD(trade.total_value)}</span>
+        </div>
+        <div className="modal-row">
+          <span className="modal-label">Quantity</span>
+          <span className="mono">{fmt(trade.quantity, 6)}</span>
+        </div>
+        <div className="modal-row">
+          <span className="modal-label">Opened</span>
+          <span className="mono" style={{ color:'var(--muted)' }}>{ago(trade.opened_at)}</span>
+        </div>
+        <div style={{ marginTop:16 }}>
+          <label style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:2, display:'block', marginBottom:6 }}>
+            REASON (OPTIONAL)
+          </label>
+          <input
+            type="text"
+            className="settings-input"
+            placeholder="e.g. taking profit, stop loss..."
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            style={{ fontSize:12 }}
+          />
+        </div>
+        <div style={{ marginTop:12, fontFamily:'var(--mono)', fontSize:10, color:'var(--warn)' }}>
+          This will close the position at current market price.
+        </div>
+        <div className="modal-actions">
+          <button className="btn btn-secondary" onClick={onClose} disabled={selling} style={{ flex:1 }}>
+            Cancel
+          </button>
+          <button
+            className="btn btn-danger"
+            onClick={() => onConfirm(reason || 'manual_sell')}
+            disabled={selling}
+          >
+            {selling
+              ? <span style={{ display:'flex', alignItems:'center', gap:6, justifyContent:'center' }}>
+                  <div className="spinner" style={{ width:12, height:12, borderWidth:2 }} /> Selling...
+                </span>
+              : 'Confirm Sell'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---- Overview Tab ----
 const OVERVIEW_PAGE_SIZE = 10;
 
-function OverviewTab({ overview, trades, scheduler }) {
+function OverviewTab({ overview, trades, scheduler, onTradesRefresh }) {
   const [section, setSection]     = useState('trades');
   const [tradePage, setTradePage] = useState(0);
+  const [sellTarget, setSellTarget] = useState(null);   // trade being sold
+  const [selling, setSelling]     = useState(false);
+  const [toast, setToast]         = useState(null);     // { msg, type }
   const totalPnlPos = overview.total_pnl >= 0;
 
   // Reset trade page when switching to trades tab
@@ -1035,8 +1179,46 @@ function OverviewTab({ overview, trades, scheduler }) {
     (tradePage + 1) * OVERVIEW_PAGE_SIZE
   );
 
+  const handleSellConfirm = async (reason) => {
+    if (!sellTarget) return;
+    setSelling(true);
+    try {
+      const r = await fetch(`${API}/api/trades/${sellTarget.id}/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || 'Unknown error');
+      const pnl = d.pnl;
+      const pnlPct = d.pnl_pct;
+      const type = pnl >= 0 ? 'success' : 'warn';
+      setToast({ msg: `${d.symbol} sold — PnL: ${fmtUSD(pnl)} (${fmtPct(pnlPct)})`, type });
+      setSellTarget(null);
+      if (onTradesRefresh) onTradesRefresh();
+    } catch(e) {
+      setToast({ msg: `Sell failed: ${e.message}`, type: 'error' });
+    } finally {
+      setSelling(false);
+    }
+  };
+
   return (
     <>
+      {/* Sell modal */}
+      {sellTarget && (
+        <SellModal
+          trade={sellTarget}
+          selling={selling}
+          onClose={() => setSellTarget(null)}
+          onConfirm={handleSellConfirm}
+        />
+      )}
+      {/* Toast */}
+      {toast && (
+        <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />
+      )}
+
       {/* Hero */}
       <div className="hero-card" style={{marginBottom:16}}>
         <div>
@@ -1074,7 +1256,7 @@ function OverviewTab({ overview, trades, scheduler }) {
 
       {/* Sub-tabs */}
       <div className="tabs" style={{marginBottom:20}}>
-        {[['trades','Trades'],['accuracy','Accuracy'],['equity','Equity']].map(([id, label]) => (
+        {[['trades','Trades'],['accuracy','Accuracy'],['equity','Equity'],['benchmarks','Benchmarks']].map(([id, label]) => (
           <button key={id} className={`tab ${section===id?'active':''}`} onClick={() => switchSection(id)}>
             {label}
           </button>
@@ -1097,6 +1279,7 @@ function OverviewTab({ overview, trades, scheduler }) {
                   <th>PnL</th>
                   <th>Opened</th>
                   <th>Notes</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -1112,13 +1295,27 @@ function OverviewTab({ overview, trades, scheduler }) {
                       {t.realized_pnl !== 0 ? fmtUSD(t.realized_pnl) : '—'}
                     </td>
                     <td style={{fontSize:11,color:'var(--muted)'}}>{ago(t.opened_at)}</td>
-                    <td style={{fontSize:11,color:'var(--muted)',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                    <td style={{fontSize:11,color:'var(--muted)',maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
                       {t.notes}
+                    </td>
+                    <td>
+                      {t.status === 'open' ? (
+                        <button
+                          className="btn-sell"
+                          onClick={() => setSellTarget(t)}
+                          disabled={selling && sellTarget?.id === t.id}
+                          title="Close position at market price"
+                        >
+                          ↓ Sell Now
+                        </button>
+                      ) : (
+                        <span style={{ fontSize:10, color:'var(--border2)', fontFamily:'var(--mono)' }}>—</span>
+                      )}
                     </td>
                   </tr>
                 ))}
                 {trades.length === 0 && (
-                  <tr><td colSpan={9}><div className="empty">No trades yet</div></td></tr>
+                  <tr><td colSpan={10}><div className="empty">No trades yet</div></td></tr>
                 )}
               </tbody>
             </table>
@@ -1132,6 +1329,9 @@ function OverviewTab({ overview, trades, scheduler }) {
 
       {/* Accuracy section */}
       {section === 'accuracy' && <AccuracyTab />}
+
+      {/* Benchmarks section */}
+      {section === 'benchmarks' && <BenchmarksTab />}
 
       {/* Equity section */}
       {section === 'equity' && <EquityTab />}
@@ -1209,7 +1409,7 @@ function PredCard({ pred }) {
         </div>
         <div style={{textAlign:'right'}}>
           <div className="mono" style={{fontSize:14,color:confColor,fontWeight:700}}>
-            {pred.confidence}% bull
+            {pred.confidence}% 
           </div>
           <div className="pred-time">{ago(pred.created_at)}</div>
         </div>
@@ -1767,23 +1967,19 @@ function ChartsTab({ symbolsByMarket, prices }) {
 }
 
 // ===============================================
-// ACCURACY TAB
+// ACCURACY TAB  (real outcome data — recorded 24h post-prediction)
 // ===============================================
 function AccuracyTab() {
-  const [hours, setHours]     = useState(24);
-  const [data, setData]       = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [predPage, setPredPage] = useState(0);
+  const [data, setData]         = useState(null);
+  const [loading, setLoading]   = useState(false);
+  const [triggering, setTriggering] = useState(false);
+  const [triggerMsg, setTriggerMsg] = useState(null);
 
-  // Reset page when range changes
-  const changeHours = h => { setHours(h); setPredPage(0); };
-
-  const fetchAccuracy = useCallback(async (h) => {
+  const fetchAccuracy = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch(`${API}/api/accuracy?hours=${h}`);
-      const d = await r.json();
-      setData(d);
+      const r = await fetch(`${API}/api/accuracy`);
+      setData(await r.json());
     } catch(e) {
       console.error(e);
     } finally {
@@ -1791,154 +1987,272 @@ function AccuracyTab() {
     }
   }, []);
 
-  useEffect(() => { fetchAccuracy(hours); }, [hours]);
+  useEffect(() => { fetchAccuracy(); }, []);
 
-  // Aggregate by symbol for bar chart (average predicted vs actual)
-  const barData = useMemo(() => {
-    if (!data?.predictions?.length) return [];
-    const bySymbol = {};
-    for (const p of data.predictions) {
-      if (!bySymbol[p.symbol]) bySymbol[p.symbol] = { predicted: [], actual: [] };
-      bySymbol[p.symbol].predicted.push(p.predicted_close);
-      bySymbol[p.symbol].actual.push(p.actual_price);
+  const triggerNow = async () => {
+    setTriggering(true);
+    setTriggerMsg(null);
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 90000); // 90s hard cap
+    try {
+      const r = await fetch(`${API}/api/outcomes/trigger`, { method: 'POST', signal: controller.signal });
+      clearTimeout(tid);
+      const d = await r.json();
+      setTriggerMsg(`Recorded ${d.outcomes_recorded} outcome(s).`);
+      await fetchAccuracy();
+    } catch(e) {
+      clearTimeout(tid);
+      setTriggerMsg(e.name === 'AbortError' ? 'Timed out — backfill is still running server-side.' : 'Error triggering outcome recorder.');
+    } finally {
+      setTriggering(false);
     }
-    return Object.entries(bySymbol).map(([sym, v]) => ({
-      symbol:          sym.replace('/USDT','').replace('/',''),
-      predicted_close: Math.round(v.predicted.reduce((a,b) => a+b,0) / v.predicted.length * 100) / 100,
-      actual_price:    Math.round(v.actual.reduce((a,b) => a+b,0) / v.actual.length * 100) / 100,
-    }));
+  };
+
+  const accColor = pct => pct >= 60 ? 'var(--success)' : pct >= 45 ? '#f5a623' : 'var(--danger)';
+
+  // Scatter chart data: predicted % vs actual %
+  const scatterData = useMemo(() => {
+    if (!data?.chart_data?.length) return [];
+    return data.chart_data;
   }, [data]);
+
+  if (loading && !data) {
+    return (
+      <div style={{ display:'flex', alignItems:'center', gap:12, padding:'40px 0' }}>
+        <div className="spinner" />
+        <span style={{ color:'var(--muted)', fontFamily:'var(--mono)', fontSize:12 }}>LOADING ACCURACY DATA...</span>
+      </div>
+    );
+  }
+
+  // ── State A: no outcomes yet ──────────────────────────────────────────────
+  if (!data || !data.has_data) {
+    const pending = data?.pending_outcomes ?? 0;
+    const awaiting = data?.awaiting_24h ?? 0;
+    const oldestH = data?.oldest_pending_hours;
+    return (
+      <div>
+        <div className="card" style={{ marginBottom:16, textAlign:'center', padding:'40px 24px' }}>
+          <div style={{ fontSize:48, marginBottom:16 }}>⏳</div>
+          <div style={{ fontFamily:'var(--mono)', fontSize:14, color:'var(--text)', marginBottom:8 }}>
+            No outcomes recorded yet
+          </div>
+          <div style={{ fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)', marginBottom:20, lineHeight:1.8 }}>
+            Outcomes are recorded automatically 24h after each prediction.<br />
+            The trigger button below backfills any predictions already older than 24h.
+          </div>
+          {(pending > 0 || awaiting > 0) && (
+            <div style={{
+              display:'inline-flex', gap:16, flexWrap:'wrap', justifyContent:'center',
+              background:'var(--bg)', border:'1px solid var(--border)', borderRadius:8,
+              padding:'12px 24px', marginBottom:20, fontFamily:'var(--mono)', fontSize:11,
+            }}>
+              {pending > 0 && (
+                <span style={{ color:'var(--warn)' }}>
+                  {pending} prediction(s) awaiting outcome recording
+                  {oldestH != null ? ` (oldest: ${oldestH}h ago)` : ''}
+                </span>
+              )}
+              {awaiting > 0 && (
+                <span style={{ color:'var(--muted)' }}>
+                  {awaiting} prediction(s) still within 24h window
+                </span>
+              )}
+            </div>
+          )}
+          <div style={{ display:'flex', gap:12, justifyContent:'center', alignItems:'center', flexWrap:'wrap' }}>
+            <button
+              className="btn btn-primary"
+              onClick={triggerNow}
+              disabled={triggering}
+            >
+              {triggering ? '⟳ Running...' : '▶ Trigger Outcome Recording Now'}
+            </button>
+            <button className="btn btn-secondary" onClick={fetchAccuracy} disabled={loading}>
+              ↺ Refresh
+            </button>
+          </div>
+          {triggerMsg && (
+            <div style={{ marginTop:12, fontFamily:'var(--mono)', fontSize:12, color:'var(--success)' }}>
+              {triggerMsg}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── State B: outcomes exist ───────────────────────────────────────────────
+  const { overall, by_model, by_symbol, high_confidence, agreement_accuracy,
+          chart_data, total_with_outcomes, pending_outcomes } = data;
+
+  // Symbol table rows sorted by total desc
+  const symbolRows = Object.entries(by_symbol || {})
+    .map(([sym, s]) => ({ sym, ...s }))
+    .sort((a, b) => b.total - a.total);
 
   return (
     <div>
-      {/* Time range */}
-      <div style={{ display:'flex', gap:12, alignItems:'center', marginBottom:20 }}>
-        <span style={{ fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)', letterSpacing:2 }}>RANGE:</span>
-        <div className="tabs" style={{ marginBottom:0 }}>
-          {[6,12,24,48].map(h => (
-            <button key={h} className={`tab ${hours===h?'active':''}`} onClick={() => changeHours(h)}>
-              {h}h
-            </button>
-          ))}
+      {/* Controls */}
+      <div style={{ display:'flex', gap:12, alignItems:'center', marginBottom:20, flexWrap:'wrap' }}>
+        <div style={{ fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)' }}>
+          {total_with_outcomes} prediction(s) with outcomes
+          {pending_outcomes > 0 && (
+            <span style={{ color:'var(--warn)', marginLeft:8 }}>
+              · {pending_outcomes} pending backfill
+            </span>
+          )}
         </div>
+        <button className="btn btn-secondary" onClick={triggerNow} disabled={triggering} style={{ fontSize:10, padding:'6px 14px' }}>
+          {triggering ? '⟳ Running...' : '↺ Trigger Backfill'}
+        </button>
+        <button className="btn btn-secondary" onClick={fetchAccuracy} disabled={loading} style={{ fontSize:10, padding:'6px 14px' }}>
+          ↺ Refresh
+        </button>
         {loading && <div className="spinner" style={{ width:16, height:16 }} />}
+        {triggerMsg && (
+          <span style={{ fontFamily:'var(--mono)', fontSize:11, color:'var(--success)' }}>{triggerMsg}</span>
+        )}
       </div>
 
-      {data && (
-        <>
-          {/* Stat cards */}
-          <div className="grid-3" style={{ marginBottom:24 }}>
-            <div className="stat-card">
-              <div className="stat-label">Direction Accuracy</div>
-              <div className="stat-value" style={{ color: data.direction_accuracy >= 55 ? 'var(--success)' : 'var(--warn)' }}>
-                {data.direction_accuracy}%
-              </div>
+      {/* Stat cards row */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:24 }}>
+        {[
+          { label:'Overall Accuracy', value: overall?.accuracy_pct, suffix:'%' },
+          { label:'Kronos-small',     value: by_model?.small?.accuracy_pct, suffix:'%' },
+          { label:'Kronos-mini',      value: by_model?.mini?.accuracy_pct,  suffix:'%' },
+          { label:'Both Agree',       value: agreement_accuracy?.accuracy_pct, suffix:'%' },
+        ].map(({ label, value }) => (
+          <div key={label} className="stat-card">
+            <div className="stat-label">{label}</div>
+            <div className="stat-value" style={{
+              fontSize: 32,
+              color: value == null ? 'var(--muted)' : accColor(value),
+            }}>
+              {value == null ? '—' : `${value}%`}
             </div>
-            <div className="stat-card">
-              <div className="stat-label">Avg Price Error</div>
-              <div className="stat-value" style={{ color: data.avg_error_pct < 3 ? 'var(--success)' : 'var(--warn)' }}>
-                {data.avg_error_pct}%
+            {label === 'Both Agree' && agreement_accuracy && (
+              <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', marginTop:4 }}>
+                {agreement_accuracy.correct}/{agreement_accuracy.total} trades
               </div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Predictions Tracked</div>
-              <div className="stat-value" style={{ color:'var(--accent2)' }}>
-                {data.total}
-              </div>
-            </div>
+            )}
           </div>
+        ))}
+      </div>
 
-          {/* Bar chart */}
-          {barData.length > 0 && (
-            <>
-              <div className="section-label">Avg Predicted vs Actual Price by Symbol</div>
-              <div className="card" style={{ padding:'20px 8px', marginBottom:24 }}>
-                <ResponsiveContainer width="100%" height={240}>
-                  <BarChart data={barData} margin={{ top:10, right:20, left:10, bottom:10 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                    <XAxis dataKey="symbol" tick={{ fontSize:11, fill:'var(--muted)', fontFamily:'var(--mono)' }} />
-                    <YAxis
-                      tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
-                      width={90} tickFormatter={v => fmtUSD(v)}
-                    />
-                    <Tooltip
-                      contentStyle={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8, fontFamily:'var(--mono)', fontSize:11 }}
-                      formatter={(val, name) => [fmtUSD(val), name === 'predicted_close' ? 'Predicted' : 'Actual']}
-                    />
-                    <Legend
-                      formatter={v => v === 'predicted_close' ? 'Predicted' : 'Actual'}
-                      wrapperStyle={{ fontFamily:'var(--mono)', fontSize:11 }}
-                    />
-                    <Bar dataKey="predicted_close" fill="rgba(0,136,255,0.7)"  radius={[4,4,0,0]} name="predicted_close" />
-                    <Bar dataKey="actual_price"    fill="rgba(0,229,160,0.7)"  radius={[4,4,0,0]} name="actual_price" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </>
+      {/* High-confidence callout */}
+      {high_confidence && high_confidence.total > 0 && (
+        <div style={{
+          background:'rgba(0,229,160,0.06)', border:'1px solid rgba(0,229,160,0.2)',
+          borderRadius:8, padding:'10px 16px', marginBottom:20,
+          display:'flex', gap:16, alignItems:'center', fontFamily:'var(--mono)', fontSize:11,
+        }}>
+          <span style={{ color:'var(--accent)', fontWeight:700 }}>HIGH CONFIDENCE (≥75%)</span>
+          <span style={{ color:'var(--text)' }}>
+            {high_confidence.accuracy_pct}% accuracy
+          </span>
+          <span style={{ color:'var(--muted)' }}>({high_confidence.correct}/{high_confidence.total} correct)</span>
+          {high_confidence.avg_error_pct != null && (
+            <span style={{ color:'var(--muted)' }}>avg error {high_confidence.avg_error_pct}%</span>
           )}
+        </div>
+      )}
 
-          {/* Prediction log */}
-          <div className="section-label">Prediction Log</div>
-          <div className="card">
+      {/* By-symbol table */}
+      {symbolRows.length > 0 && (
+        <>
+          <div className="section-label">Accuracy by Symbol</div>
+          <div className="card" style={{ marginBottom:24 }}>
             <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
                     <th>Symbol</th>
-                    <th>When</th>
-                    <th>At Pred</th>
-                    <th>Predicted</th>
-                    <th>Actual</th>
-                    <th>Error %</th>
-                    <th>Direction</th>
-                    <th>Confidence</th>
+                    <th>Predictions</th>
+                    <th>Correct</th>
+                    <th>Accuracy</th>
+                    <th>Avg Error</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {data.predictions
-                    .slice(predPage * OVERVIEW_PAGE_SIZE, (predPage + 1) * OVERVIEW_PAGE_SIZE)
-                    .map(p => (
-                    <tr key={p.id}>
-                      <td className="mono">{p.symbol}</td>
-                      <td style={{ fontSize:11, color:'var(--muted)' }}>{ago(p.predicted_at)}</td>
-                      <td className="mono">{fmtUSD(p.price_at_prediction)}</td>
-                      <td className="mono">{fmtUSD(p.predicted_close)}</td>
-                      <td className="mono">{fmtUSD(p.actual_price)}</td>
-                      <td className={`mono ${p.error_pct != null && Math.abs(p.error_pct) < 3 ? 'pnl pos' : 'pnl neg'}`}>
-                        {p.error_pct != null ? `${p.error_pct > 0 ? '+' : ''}${p.error_pct}%` : '—'}
+                  {symbolRows.map(r => (
+                    <tr key={r.sym}>
+                      <td className="mono" style={{ fontWeight:700 }}>{r.sym}</td>
+                      <td className="mono">{r.total}</td>
+                      <td className="mono">{r.correct}</td>
+                      <td>
+                        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                          <div style={{
+                            width:80, height:6, background:'var(--border)', borderRadius:3, overflow:'hidden',
+                          }}>
+                            <div style={{
+                              height:'100%', width:`${r.accuracy_pct}%`,
+                              background: accColor(r.accuracy_pct),
+                              borderRadius:3, transition:'width 0.4s',
+                            }} />
+                          </div>
+                          <span className="mono" style={{ color: accColor(r.accuracy_pct) }}>
+                            {r.accuracy_pct}%
+                          </span>
+                        </div>
                       </td>
-                      <td style={{ textAlign:'center', fontSize:16 }}>
-                        {p.direction_correct === null ? '—' : p.direction_correct
-                          ? <span style={{ color:'var(--success)' }}>✓</span>
-                          : <span style={{ color:'var(--danger)' }}>✗</span>
-                        }
-                      </td>
-                      <td className="mono" style={{ color: p.confidence >= 55 ? 'var(--success)' : 'var(--danger)' }}>
-                        {p.confidence}%
+                      <td className="mono" style={{ color:'var(--muted)' }}>
+                        {r.avg_error_pct != null ? `${r.avg_error_pct}%` : '—'}
                       </td>
                     </tr>
                   ))}
-                  {data.predictions.length === 0 && (
-                    <tr>
-                      <td colSpan={8}>
-                        <div className="empty">No predictions tracked for this time range</div>
-                      </td>
-                    </tr>
-                  )}
                 </tbody>
               </table>
             </div>
-            <Pagination
-              page={predPage} total={data.predictions.length}
-              pageSize={OVERVIEW_PAGE_SIZE} onChange={setPredPage}
-            />
           </div>
         </>
       )}
 
-      {!data && !loading && (
-        <div className="card"><div className="empty">No accuracy data available</div></div>
+      {/* Predicted vs Actual scatter */}
+      {scatterData.length > 0 && (
+        <>
+          <div className="section-label">Predicted vs Actual Move % (last {scatterData.length})</div>
+          <div className="card" style={{ padding:'20px 8px', marginBottom:16 }}>
+            <ResponsiveContainer width="100%" height={260}>
+              <ComposedChart data={scatterData} margin={{ top:10, right:20, left:10, bottom:10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis
+                  dataKey="created_at"
+                  tickFormatter={t => { try { return new Date(t).toLocaleDateString('en-US', { month:'short', day:'numeric' }); } catch { return ''; } }}
+                  tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
+                  interval="preserveStartEnd"
+                />
+                <YAxis
+                  tick={{ fontSize:10, fill:'var(--muted)', fontFamily:'var(--mono)' }}
+                  width={60}
+                  tickFormatter={v => `${v}%`}
+                />
+                <Tooltip
+                  contentStyle={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8, fontFamily:'var(--mono)', fontSize:11 }}
+                  formatter={(val, name) => [`${val}%`, name === 'predicted_pct' ? 'Predicted' : 'Actual']}
+                  labelFormatter={t => { try { return new Date(t).toLocaleString(); } catch { return t; } }}
+                />
+                <ReferenceLine y={0} stroke="var(--muted)" strokeDasharray="4 2" />
+                <Line type="monotone" dataKey="predicted_pct" stroke="rgba(0,136,255,0.8)"
+                  strokeWidth={1.5} dot={false} name="predicted_pct" />
+                <Line type="monotone" dataKey="actual_pct" stroke="rgba(0,229,160,0.8)"
+                  strokeWidth={1.5} dot={false} name="actual_pct" />
+              </ComposedChart>
+            </ResponsiveContainer>
+            <div style={{ display:'flex', gap:20, justifyContent:'center', marginTop:8, fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)' }}>
+              <span style={{ color:'rgba(0,136,255,0.9)' }}>— Predicted %</span>
+              <span style={{ color:'rgba(0,229,160,0.9)' }}>— Actual %</span>
+            </div>
+          </div>
+        </>
       )}
+
+      {/* Footer note */}
+      <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', lineHeight:1.8 }}>
+        Accuracy = correct direction prediction (UP/DOWN). &nbsp;
+        High confidence threshold: ≥75% model confidence. &nbsp;
+        Outcomes recorded automatically 24h after each prediction.
+      </div>
     </div>
   );
 }
@@ -2364,6 +2678,37 @@ function SettingsTab() {
             })}
           </div>
         </div>
+
+        {/* Agreement gate toggle */}
+        <div style={{ marginTop:20 }}>
+          <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:2, marginBottom:10 }}>
+            REQUIRE MODEL AGREEMENT
+          </div>
+          <label style={{ display:'flex', alignItems:'center', gap:12, cursor:'pointer' }}>
+            <div
+              onClick={() => setModel('require_agreement', getModel('require_agreement') === false ? true : false)}
+              style={{
+                width:40, height:22, borderRadius:11, cursor:'pointer',
+                background: getModel('require_agreement') !== false ? 'var(--success)' : 'var(--border2)',
+                position:'relative', transition:'background 0.2s', flexShrink:0,
+              }}
+            >
+              <div style={{
+                position:'absolute', top:3, borderRadius:'50%',
+                width:16, height:16, background:'#fff',
+                left: getModel('require_agreement') !== false ? 21 : 3,
+                transition:'left 0.2s',
+              }} />
+            </div>
+            <span style={{ fontFamily:'var(--mono)', fontSize:12, color:'var(--text)' }}>
+              {getModel('require_agreement') !== false ? 'Agreement required to trade' : 'Single model trades enabled'}
+            </span>
+          </label>
+          <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', marginTop:8, lineHeight:1.6 }}>
+            Only open positions when both Kronos-small and Kronos-mini predict the same direction.
+            Reduces trade frequency but improves signal quality.
+          </div>
+        </div>
       </div>
 
       {/* Symbol Management — moved to its own tab */}
@@ -2423,6 +2768,797 @@ function SettingsTab() {
         <TestDiscordButton />
       </div>
 
+      {/* Cost Model */}
+      <div className="section-label">Cost Model</div>
+      <div className="card" style={{ marginBottom:16 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:16 }}>
+          <div>
+            <div style={{ fontFamily:'var(--mono)', fontSize:11, color:'var(--text)', marginBottom:4 }}>Cost Model Enabled</div>
+            <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)' }}>Fees and slippage subtracted from realised P&amp;L</div>
+          </div>
+          <label style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer' }}>
+            <input type="checkbox"
+              checked={settings.costs?.enabled ?? true}
+              onChange={e => setSettings(s => ({ ...s, costs: { ...(s.costs||{}), enabled: e.target.checked } }))}
+            />
+            <span style={{ fontFamily:'var(--mono)', fontSize:12, color:'var(--text)' }}>
+              {settings.costs?.enabled ? 'Enabled' : 'Disabled'}
+            </span>
+          </label>
+        </div>
+        <div className="grid-2" style={{ marginBottom:16 }}>
+          <div>
+            <label style={{ display:'block', fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:2, marginBottom:8 }}>CRYPTO FEE (BPS/SIDE)</label>
+            <input type="number" className="settings-input" step="1" min="0" max="200"
+              value={settings.costs?.crypto?.fee_bps_per_side ?? 40}
+              onChange={e => setSettings(s => ({ ...s, costs: { ...(s.costs||{}), crypto: { ...(s.costs?.crypto||{}), fee_bps_per_side: parseFloat(e.target.value)||0 } } }))}
+            />
+            <div style={{ fontFamily:'var(--mono)', fontSize:9, color:'var(--muted)', marginTop:4 }}>Binance.US taker ≈ 40–60 bps. Check your tier.</div>
+          </div>
+          <div>
+            <label style={{ display:'block', fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:2, marginBottom:8 }}>CRYPTO SLIPPAGE (BPS/SIDE)</label>
+            <input type="number" className="settings-input" step="1" min="0" max="200"
+              value={settings.costs?.crypto?.slippage_bps_per_side ?? 5}
+              onChange={e => setSettings(s => ({ ...s, costs: { ...(s.costs||{}), crypto: { ...(s.costs?.crypto||{}), slippage_bps_per_side: parseFloat(e.target.value)||0 } } }))}
+            />
+          </div>
+          <div>
+            <label style={{ display:'block', fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:2, marginBottom:8 }}>STOCKS FEE (BPS/SIDE)</label>
+            <input type="number" className="settings-input" step="1" min="0" max="100"
+              value={settings.costs?.stocks?.fee_bps_per_side ?? 0}
+              onChange={e => setSettings(s => ({ ...s, costs: { ...(s.costs||{}), stocks: { ...(s.costs?.stocks||{}), fee_bps_per_side: parseFloat(e.target.value)||0 } } }))}
+            />
+            <div style={{ fontFamily:'var(--mono)', fontSize:9, color:'var(--muted)', marginTop:4 }}>Alpaca: commission-free (0 bps).</div>
+          </div>
+          <div>
+            <label style={{ display:'block', fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', letterSpacing:2, marginBottom:8 }}>STOCKS SLIPPAGE (BPS/SIDE)</label>
+            <input type="number" className="settings-input" step="1" min="0" max="200"
+              value={settings.costs?.stocks?.slippage_bps_per_side ?? 10}
+              onChange={e => setSettings(s => ({ ...s, costs: { ...(s.costs||{}), stocks: { ...(s.costs?.stocks||{}), slippage_bps_per_side: parseFloat(e.target.value)||0 } } }))}
+            />
+            <div style={{ fontFamily:'var(--mono)', fontSize:9, color:'var(--muted)', marginTop:4 }}>10 bps optimistic for liquid names; illiquid (GME/SIDU) may be 30-100 bps.</div>
+          </div>
+        </div>
+        <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', lineHeight:1.8 }}>
+          1 bps = 0.01%. Slippage is directionally adverse: buys fill high, sells fill low. Save settings then recompute benchmarks.
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
+// ===============================================
+// BENCHMARKS TAB
+// ===============================================
+function BenchmarksTab() {
+  const { useState, useEffect, useCallback } = React;
+  const { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+          Tooltip, Legend, ReferenceLine, ResponsiveContainer } = Recharts;
+
+  const [data,   setData]   = useState(null);
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/api/benchmarks/status`);
+      setStatus(await r.json());
+    } catch(e) { console.error(e); }
+  }, []);
+
+  const fetchBenchmarks = useCallback(async (forceRefresh = false) => {
+    setLoading(true);
+    try {
+      const url = `${API}/api/benchmarks${forceRefresh ? '?refresh=true' : ''}`;
+      const r   = await fetch(url);
+      setData(await r.json());
+    } catch(e) { console.error(e); }
+    finally { setLoading(false); setRefreshing(false); }
+  }, []);
+
+  useEffect(() => {
+    fetchStatus();
+    fetchBenchmarks(false);
+  }, []);
+
+  const fmt  = (v, d=2) => v == null ? '—' : Number(v).toFixed(d);
+  const fmtP = v => v == null ? '—' : `${Number(v).toFixed(2)}%`;
+  const fmtD = v => v == null ? '—' : `$${Number(v).toFixed(2)}`;
+
+  // ── Coverage warning banner ──────────────────────────────────────────────
+  const CoverageBanner = () => {
+    if (!status) return null;
+    const ok = status.sufficient;
+    return (
+      <div style={{
+        padding:'10px 16px', borderRadius:8, marginBottom:16,
+        background: ok ? 'rgba(0,229,160,0.08)' : 'rgba(255,107,53,0.12)',
+        border: `1px solid ${ok ? 'var(--success)' : 'var(--warn)'}`,
+        fontFamily:'var(--mono)', fontSize:11,
+        color: ok ? 'var(--success)' : 'var(--warn)',
+      }}>
+        {ok
+          ? '✓ Candle coverage is sufficient to trust these results.'
+          : '⚠ Candle coverage is low — run candle_backfill.py first for reliable results.'}
+      </div>
+    );
+  };
+
+  // ── Stat card ────────────────────────────────────────────────────────────
+  const StatCard = ({ label, value, sub, accent }) => (
+    <div className="card" style={{ textAlign:'center' }}>
+      <div style={{ fontFamily:'var(--mono)', fontSize:9, color:'var(--muted)', letterSpacing:2, textTransform:'uppercase', marginBottom:8 }}>{label}</div>
+      <div style={{ fontFamily:'var(--mono)', fontSize:22, fontWeight:700,
+                    color: accent === 'pos' ? 'var(--success)' : accent === 'neg' ? 'var(--danger)' : 'var(--text)' }}>
+        {value}
+      </div>
+      {sub && <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', marginTop:4 }}>{sub}</div>}
+    </div>
+  );
+
+  if (loading && !data) return (
+    <div style={{ display:'flex', alignItems:'center', gap:12, padding:'40px 0' }}>
+      <div className="spinner" />
+      <span style={{ color:'var(--muted)', fontFamily:'var(--mono)', fontSize:12 }}>
+        COMPUTING BENCHMARKS — THIS MAY TAKE 60–120s ON FIRST LOAD...
+      </span>
+    </div>
+  );
+
+  const live    = data?.live_strategy;
+  const mc      = data?.monte_carlo;
+  const inv     = data?.inverse_signal;
+  const bh      = data?.buy_hold;
+  const cached  = data?._cached;
+  const cachedAge = data?._cache_age_sec;
+
+  // ── Equity curves — merge strategy + buy-hold into one dataset ─────────
+  const buildEquityCurves = () => {
+    const livePoints = live?.equity_curve || [];
+    const bhPoints   = bh?.equity_curve   || [];
+    const invPoints  = inv?.equity_curve  || [];
+
+    // Index all by time string for alignment
+    const times = [...new Set([
+      ...livePoints.map(p => p.time),
+      ...bhPoints.map(p => p.time),
+      ...invPoints.map(p => p.time),
+    ])].sort();
+
+    const liveMap = Object.fromEntries(livePoints.map(p => [p.time, p.equity]));
+    const bhMap   = Object.fromEntries(bhPoints.map(p => [p.time, p.equity]));
+    const invMap  = Object.fromEntries(invPoints.map(p => [p.time, p.equity]));
+
+    return times.slice(0, 300).map(t => ({
+      time:     t.slice(0, 10),
+      live:     liveMap[t] ?? null,
+      buyHold:  bhMap[t]   ?? null,
+      inverse:  invMap[t]  ?? null,
+    }));
+  };
+
+  // ── Monte Carlo histogram ────────────────────────────────────────────────
+  const mcHistData = mc?.histogram
+    ? mc.histogram.bins.map((b, i) => ({
+        bin:   `$${Number(b).toFixed(0)}`,
+        count: mc.histogram.counts[i],
+        isLive: Math.abs(b - mc.live_value) < Math.abs(mc.histogram.bins[1] - mc.histogram.bins[0]),
+      }))
+    : [];
+
+  return (
+    <div>
+      <CoverageBanner />
+
+      {/* Controls bar */}
+      <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:20, flexWrap:'wrap' }}>
+        <button className="btn btn-secondary"
+          onClick={() => { setRefreshing(true); fetchBenchmarks(false); }}
+          disabled={loading}
+          style={{ fontSize:11, padding:'6px 14px' }}
+        >
+          {loading ? '⟳ Loading...' : '↻ Reload Cache'}
+        </button>
+        <button className="btn btn-primary"
+          onClick={() => { setRefreshing(true); fetchBenchmarks(true); }}
+          disabled={loading}
+          style={{ fontSize:11, padding:'6px 14px' }}
+        >
+          {refreshing ? '⟳ Recomputing...' : '▶ Recompute Benchmarks'}
+        </button>
+        {cached !== undefined && (
+          <span style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)' }}>
+            {cached ? `Cached · ${cachedAge != null ? `${Math.round(cachedAge/3600)}h old` : ''}` : 'Fresh'}
+            {data?.computed_at ? ` · ${data.computed_at.slice(0,16).replace('T',' ')} UTC` : ''}
+          </span>
+        )}
+      </div>
+
+      {!data && !loading && (
+        <div className="card" style={{ textAlign:'center', padding:'40px 24px' }}>
+          <div style={{ fontSize:40, marginBottom:12 }}>📊</div>
+          <div style={{ fontFamily:'var(--mono)', fontSize:13, color:'var(--text)' }}>No benchmark data yet</div>
+          <div style={{ fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)', marginTop:8 }}>
+            Click "Recompute Benchmarks" to run the analysis. The first run takes ~60s on a Raspberry Pi.
+          </div>
+        </div>
+      )}
+
+      {data && live && (
+        <>
+          {/* ── Live strategy headline stats ── */}
+          <div className="section-label">Live Strategy</div>
+          <div className="grid-3" style={{ marginBottom:16 }}>
+            <StatCard label="Net Total Return"
+              value={fmtP(live.net_total_return)}
+              accent={live.net_total_return >= 0 ? 'pos' : 'neg'}
+            />
+            <StatCard label="Net CAGR"
+              value={fmtP(live.net_cagr)}
+              accent={live.net_cagr >= 0 ? 'pos' : 'neg'}
+            />
+            <StatCard label="Sharpe Ratio"
+              value={fmt(live.sharpe, 3)}
+              sub="Hourly · √8760 factor"
+              accent={live.sharpe >= 1 ? 'pos' : live.sharpe >= 0 ? null : 'neg'}
+            />
+            <StatCard label="Max Drawdown"
+              value={fmtP(live.max_drawdown_pct)}
+              accent={live.max_drawdown_pct > 20 ? 'neg' : null}
+            />
+            <StatCard label="Win Rate"
+              value={fmtP(live.win_rate)}
+              sub={`${live.n_trades} trades`}
+              accent={live.win_rate >= 50 ? 'pos' : 'neg'}
+            />
+            <StatCard label="Profit Factor"
+              value={live.profit_factor != null ? fmt(live.profit_factor, 3) : '∞'}
+              accent={live.profit_factor != null && live.profit_factor >= 1 ? 'pos' : 'neg'}
+            />
+          </div>
+
+          {/* ── Gross vs Net P&L ── */}
+          {live.gross_net_comparison && (() => {
+            const g = live.gross_net_comparison;
+            return (
+              <div className="card" style={{ marginBottom:16 }}>
+                <div style={{ fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)', letterSpacing:2, textTransform:'uppercase', marginBottom:12 }}>
+                  Cost Drag — Gross vs Net P&L
+                </div>
+                <div style={{ display:'flex', gap:32, flexWrap:'wrap' }}>
+                  <div>
+                    <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)' }}>Gross P&L</div>
+                    <div style={{ fontFamily:'var(--mono)', fontSize:20, color: g.total_gross_pnl >= 0 ? 'var(--success)' : 'var(--danger)' }}>
+                      {fmtD(g.total_gross_pnl)}
+                    </div>
+                  </div>
+                  <div style={{ display:'flex', alignItems:'center', color:'var(--muted)', fontSize:18 }}>→</div>
+                  <div>
+                    <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)' }}>Net P&L</div>
+                    <div style={{ fontFamily:'var(--mono)', fontSize:20, color: g.total_net_pnl >= 0 ? 'var(--success)' : 'var(--danger)' }}>
+                      {fmtD(g.total_net_pnl)}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)' }}>Cost Drag</div>
+                    <div style={{ fontFamily:'var(--mono)', fontSize:20, color:'var(--warn)' }}>
+                      {fmtD(g.total_cost_drag)} ({fmtP(g.cost_drag_pct)})
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* ── Bootstrap CI ── */}
+          {live.bootstrap_95ci_mean_return && (
+            <div className="card" style={{ marginBottom:16 }}>
+              <div style={{ fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)', letterSpacing:2, textTransform:'uppercase', marginBottom:8 }}>
+                Bootstrap 95% CI — Mean Net Trade Return (10,000 resamples)
+              </div>
+              <div style={{ fontFamily:'var(--mono)', fontSize:16, color:'var(--text)' }}>
+                [{fmtD(live.bootstrap_95ci_mean_return.low)}, {fmtD(live.bootstrap_95ci_mean_return.high)}]
+              </div>
+              <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', marginTop:4 }}>
+                Avg net P&L / trade: {fmtD(live.avg_net_pnl_per_trade)}
+              </div>
+            </div>
+          )}
+
+          {/* ── Equity curves overlay ── */}
+          {(live.equity_curve?.length > 0) && (
+            <>
+              <div className="section-label">Equity Curves — Strategy vs Benchmarks</div>
+              <div className="card" style={{ marginBottom:16 }}>
+                <ResponsiveContainer width="100%" height={260}>
+                  <LineChart data={buildEquityCurves()} margin={{ top:10, right:20, left:10, bottom:10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                    <XAxis dataKey="time" tick={{ fill:'var(--muted)', fontSize:9 }} interval="preserveStartEnd" />
+                    <YAxis tick={{ fill:'var(--muted)', fontSize:9 }} tickFormatter={v => `$${v.toFixed(0)}`} />
+                    <Tooltip
+                      contentStyle={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8 }}
+                      labelStyle={{ color:'var(--muted)', fontSize:10 }}
+                      formatter={(v, name) => [`$${Number(v).toFixed(2)}`, name]}
+                    />
+                    <Legend wrapperStyle={{ fontSize:11, fontFamily:'var(--mono)' }} />
+                    <Line type="monotone" dataKey="live"    name="Live Strategy" stroke="var(--accent)"  strokeWidth={2} dot={false} connectNulls />
+                    <Line type="monotone" dataKey="buyHold" name="Buy &amp; Hold"   stroke="var(--accent2)" strokeWidth={1.5} dot={false} connectNulls strokeDasharray="4 2" />
+                    <Line type="monotone" dataKey="inverse" name="Inverse Signal" stroke="var(--warn)"   strokeWidth={1.5} dot={false} connectNulls strokeDasharray="2 2" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </>
+          )}
+
+          {/* ── Monte Carlo ── */}
+          {mc && !mc.error && (
+            <>
+              <div className="section-label">Random Entry Monte Carlo (N={mc.n_iterations})</div>
+              <div className="card" style={{ marginBottom:16 }}>
+                {/* p-value plain-language summary */}
+                <div style={{
+                  padding:'12px 16px', borderRadius:8, marginBottom:16,
+                  background: mc.empirical_p_value < 0.05 ? 'rgba(0,229,160,0.08)' : 'rgba(255,107,53,0.10)',
+                  border: `1px solid ${mc.empirical_p_value < 0.05 ? 'var(--success)' : 'var(--warn)'}`,
+                }}>
+                  <div style={{ fontFamily:'var(--mono)', fontSize:11, color:'var(--text)', lineHeight:1.8 }}>
+                    {mc.interpretation}
+                  </div>
+                  <div style={{ display:'flex', gap:24, marginTop:8, flexWrap:'wrap' }}>
+                    <span style={{ fontFamily:'var(--mono)', fontSize:12, color: mc.live_percentile >= 50 ? 'var(--success)' : 'var(--warn)' }}>
+                      Percentile: {mc.live_percentile?.toFixed(1)}th
+                    </span>
+                    <span style={{ fontFamily:'var(--mono)', fontSize:12, color: mc.empirical_p_value < 0.05 ? 'var(--success)' : 'var(--warn)' }}>
+                      p-value: {mc.empirical_p_value?.toFixed(4)}
+                    </span>
+                    <span style={{ fontFamily:'var(--mono)', fontSize:12, color:'var(--muted)' }}>
+                      Random median: {fmtD(mc.random_median)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Histogram */}
+                {mcHistData.length > 0 && (
+                  <ResponsiveContainer width="100%" height={200}>
+                    <BarChart data={mcHistData} margin={{ top:5, right:10, left:10, bottom:20 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                      <XAxis dataKey="bin" tick={{ fill:'var(--muted)', fontSize:8 }} interval={Math.floor(mcHistData.length/8)} angle={-30} textAnchor="end" />
+                      <YAxis tick={{ fill:'var(--muted)', fontSize:9 }} />
+                      <Tooltip
+                        contentStyle={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8 }}
+                        formatter={(v) => [v, 'Runs']}
+                      />
+                      <ReferenceLine x={`$${Number(mc.live_value || mc.live_net_total).toFixed(0)}`}
+                        stroke="var(--accent)" strokeWidth={2} label={{ value:'Live', fill:'var(--accent)', fontSize:10 }} />
+                      <Bar dataKey="count" fill="var(--accent2)" opacity={0.7} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+                <div style={{ fontFamily:'var(--mono)', fontSize:9, color:'var(--muted)', marginTop:8, lineHeight:1.8 }}>
+                  Histogram of 1000 random-entry net P&L outcomes. Live strategy result marked in green.
+                  Same exit rules (-3% stop / +6% TP) and cost model as live strategy.
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* ── Inverse signal summary ── */}
+          {inv && !inv.error && (
+            <>
+              <div className="section-label">Inverse Signal (Short Side of Every Signal)</div>
+              <div className="card" style={{ marginBottom:16 }}>
+                <div className="grid-3">
+                  <StatCard label="Net Return" value={fmtP(inv.net_total_return)} accent={inv.net_total_return >= 0 ? 'pos' : 'neg'} />
+                  <StatCard label="Win Rate"   value={fmtP(inv.win_rate)} />
+                  <StatCard label="Sharpe"     value={fmt(inv.sharpe, 3)} />
+                </div>
+                {inv.excluded_count > 0 && (
+                  <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', marginTop:12 }}>
+                    {inv.excluded_count} trade(s) excluded — missing candles at entry/exit.
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* ── Confidence bucket breakdown ── */}
+          {live.by_confidence_bucket && (
+            <>
+              <div className="section-label">Confidence Bucket Breakdown</div>
+              <div className="card" style={{ marginBottom:16 }}>
+                <div style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', marginBottom:12, lineHeight:1.8 }}>
+                  {live.confidence_note}
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Confidence Bucket</th>
+                        <th>Trades</th>
+                        <th>Win Rate</th>
+                        <th>Avg Net P&L</th>
+                        <th>Total Net P&L</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(live.by_confidence_bucket)
+                        .sort(([a], [b]) => a.localeCompare(b))
+                        .map(([bucket, stats]) => (
+                          <tr key={bucket}>
+                            <td className="mono">{bucket}</td>
+                            <td className="mono">{stats.n_trades}</td>
+                            <td className="mono" style={{ color: stats.win_rate >= 50 ? 'var(--success)' : 'var(--danger)' }}>
+                              {fmtP(stats.win_rate)}
+                            </td>
+                            <td className="mono" style={{ color: stats.avg_net_pnl >= 0 ? 'var(--success)' : 'var(--danger)' }}>
+                              {fmtD(stats.avg_net_pnl)}
+                            </td>
+                            <td className="mono" style={{ color: stats.total_net_pnl >= 0 ? 'var(--success)' : 'var(--danger)' }}>
+                              {fmtD(stats.total_net_pnl)}
+                            </td>
+                          </tr>
+                        ))
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* ── By market ── */}
+          {live.by_market && (
+            <>
+              <div className="section-label">Breakdown by Market</div>
+              <div className="card" style={{ marginBottom:16 }}>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr><th>Market</th><th>Trades</th><th>Win Rate</th><th>Avg Net P&L</th><th>Total Net P&L</th></tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(live.by_market).map(([mkt, s]) => (
+                        <tr key={mkt}>
+                          <td className="mono" style={{ textTransform:'capitalize' }}>{mkt}</td>
+                          <td className="mono">{s.n_trades}</td>
+                          <td className="mono" style={{ color: s.win_rate >= 50 ? 'var(--success)' : 'var(--danger)' }}>{fmtP(s.win_rate)}</td>
+                          <td className="mono" style={{ color: s.avg_net_pnl >= 0 ? 'var(--success)' : 'var(--danger)' }}>{fmtD(s.avg_net_pnl)}</td>
+                          <td className="mono" style={{ color: s.total_net_pnl >= 0 ? 'var(--success)' : 'var(--danger)' }}>{fmtD(s.total_net_pnl)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* ── By symbol ── */}
+          {live.by_symbol && (
+            <>
+              <div className="section-label">Breakdown by Symbol</div>
+              <div className="card" style={{ marginBottom:16 }}>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr><th>Symbol</th><th>Trades</th><th>Win Rate</th><th>Avg Net P&L</th><th>Total Net P&L</th></tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(live.by_symbol)
+                        .sort(([,a],[,b]) => b.total_net_pnl - a.total_net_pnl)
+                        .map(([sym, s]) => (
+                          <tr key={sym}>
+                            <td className="mono">{sym}</td>
+                            <td className="mono">{s.n_trades}</td>
+                            <td className="mono" style={{ color: s.win_rate >= 50 ? 'var(--success)' : 'var(--danger)' }}>{fmtP(s.win_rate)}</td>
+                            <td className="mono" style={{ color: s.avg_net_pnl >= 0 ? 'var(--success)' : 'var(--danger)' }}>{fmtD(s.avg_net_pnl)}</td>
+                            <td className="mono" style={{ color: s.total_net_pnl >= 0 ? 'var(--success)' : 'var(--danger)' }}>{fmtD(s.total_net_pnl)}</td>
+                          </tr>
+                        ))
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ===============================================
+// AUDIT TAB
+// ===============================================
+function AuditTab() {
+  const { useState, useEffect, useCallback } = React;
+
+  const [recs, setRecs]         = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [running, setRunning]   = useState(false);
+  const [filter, setFilter]     = useState('pending');
+  const [msg, setMsg]           = useState(null);
+
+  const fetchRecs = useCallback(async () => {
+    setLoading(true);
+    try {
+      const url = filter === 'all'
+        ? `${API}/api/audit/recommendations`
+        : `${API}/api/audit/recommendations?status=${filter}`;
+      const d = await fetch(url).then(r => r.json());
+      setRecs(Array.isArray(d) ? d : []);
+    } catch(e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  }, [filter]);
+
+  useEffect(() => { fetchRecs(); }, [fetchRecs]);
+
+  const flash = (text, ok = true) => {
+    setMsg({ text, ok });
+    setTimeout(() => setMsg(null), 4000);
+  };
+
+  const runAudit = async (auditType) => {
+    setRunning(true);
+    try {
+      const r = await fetch(`${API}/api/audit/trigger`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audit_type: auditType }),
+      });
+      if (r.ok) {
+        flash(`${auditType} audit triggered — recommendations will appear shortly.`);
+        setTimeout(fetchRecs, 3000);
+      } else {
+        flash('Trigger failed — check backend logs.', false);
+      }
+    } catch(e) {
+      flash('Request failed.', false);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const approve = async (id) => {
+    const r = await fetch(`${API}/api/audit/recommendations/${id}/approve`, { method: 'POST' });
+    if (r.ok) { flash('Approved and applied.'); fetchRecs(); }
+    else { const e = await r.json(); flash(e.detail || 'Approve failed.', false); }
+  };
+
+  const reject = async (id) => {
+    const notes = prompt('Rejection notes (optional):') ?? '';
+    const r = await fetch(`${API}/api/audit/recommendations/${id}/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reviewer_notes: notes || null }),
+    });
+    if (r.ok) { flash('Rejected.'); fetchRecs(); }
+    else { flash('Reject failed.', false); }
+  };
+
+  const CONF_COLOR = {
+    high:          'var(--success)',
+    medium:        'var(--warn)',
+    low:           'var(--muted)',
+    out_of_bounds: 'var(--danger)',
+  };
+
+  const STATUS_COLOR = {
+    pending:  'var(--accent2)',
+    approved: 'var(--success)',
+    applied:  'var(--success)',
+    rejected: 'var(--danger)',
+  };
+
+  const CATEGORY_LABEL = {
+    risk_param:      'Risk Parameter',
+    symbol_list:     'Symbol List',
+    model_strategy:  'Model / Strategy',
+  };
+
+  // Group pending recs by category
+  const grouped = recs.reduce((acc, r) => {
+    const g = r.category || 'other';
+    (acc[g] = acc[g] || []).push(r);
+    return acc;
+  }, {});
+
+  return (
+    <div>
+      {/* Header row */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20, flexWrap:'wrap', gap:12 }}>
+        <div>
+          <div className="section-label" style={{ margin:0 }}>AI Audit System</div>
+          <div style={{ fontSize:12, color:'var(--muted)', marginTop:4 }}>
+            Recommendations require manual approval — nothing is auto-applied.
+          </div>
+        </div>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          <button
+            className="btn btn-secondary"
+            onClick={() => runAudit('weekly')}
+            disabled={running}
+            style={{ fontSize:11 }}
+          >
+            {running ? '⟳ Running...' : '▶ Run Weekly Audit'}
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={() => runAudit('monthly')}
+            disabled={running}
+            style={{ fontSize:11 }}
+          >
+            {running ? '⟳ Running...' : '▶ Run Monthly Audit'}
+          </button>
+        </div>
+      </div>
+
+      {/* Flash message */}
+      {msg && (
+        <div style={{
+          padding:'10px 16px', borderRadius:8, marginBottom:16,
+          background: msg.ok ? 'rgba(0,229,160,0.1)' : 'rgba(255,59,92,0.1)',
+          border: `1px solid ${msg.ok ? 'var(--success)' : 'var(--danger)'}`,
+          fontFamily:'var(--mono)', fontSize:12,
+          color: msg.ok ? 'var(--success)' : 'var(--danger)',
+        }}>
+          {msg.text}
+        </div>
+      )}
+
+      {/* Filter tabs */}
+      <div className="tabs" style={{ marginBottom:20 }}>
+        {[['pending','Pending'],['applied','Applied'],['rejected','Rejected'],['all','All']].map(([v,l]) => (
+          <button key={v} className={`tab ${filter===v?'active':''}`} onClick={() => setFilter(v)}>{l}</button>
+        ))}
+        <button className="tab" onClick={fetchRecs} style={{ marginLeft:'auto' }}>↺ Refresh</button>
+      </div>
+
+      {loading ? (
+        <div style={{ display:'flex', alignItems:'center', gap:12, padding:'40px 0' }}>
+          <div className="spinner" />
+          <span style={{ color:'var(--muted)', fontFamily:'var(--mono)', fontSize:12 }}>LOADING...</span>
+        </div>
+      ) : recs.length === 0 ? (
+        <div className="card">
+          <div className="empty">
+            {filter === 'pending'
+              ? 'No pending recommendations. Run an audit to generate new recommendations.'
+              : `No ${filter} recommendations found.`}
+          </div>
+        </div>
+      ) : (
+        /* Grouped cards — pending groups by category, others flat */
+        filter === 'pending' ? (
+          Object.entries(grouped).map(([category, items]) => (
+            <div key={category}>
+              <div className="section-label">{CATEGORY_LABEL[category] || category}</div>
+              {items.map(r => (
+                <RecCard key={r.id} rec={r}
+                  onApprove={() => approve(r.id)}
+                  onReject={() => reject(r.id)}
+                  confColor={CONF_COLOR}
+                  statusColor={STATUS_COLOR}
+                  showActions={true}
+                />
+              ))}
+            </div>
+          ))
+        ) : (
+          <>
+            <div className="section-label">{filter.charAt(0).toUpperCase()+filter.slice(1)} Recommendations</div>
+            {recs.map(r => (
+              <RecCard key={r.id} rec={r}
+                onApprove={() => approve(r.id)}
+                onReject={() => reject(r.id)}
+                confColor={CONF_COLOR}
+                statusColor={STATUS_COLOR}
+                showActions={r.status === 'pending'}
+              />
+            ))}
+          </>
+        )
+      )}
+    </div>
+  );
+}
+
+function RecCard({ rec, onApprove, onReject, confColor, statusColor, showActions }) {
+  const { useState } = React;
+  const [expanded, setExpanded] = useState(false);
+
+  const conf = rec.confidence || 'low';
+  const confLabel = conf === 'out_of_bounds' ? 'OUT OF BOUNDS' : conf.toUpperCase();
+
+  return (
+    <div className="card" style={{ marginBottom:12 }}>
+      <div style={{ display:'flex', alignItems:'flex-start', gap:12, justifyContent:'space-between', flexWrap:'wrap' }}>
+        {/* Left: param diff */}
+        <div style={{ flex:1, minWidth:200 }}>
+          <div style={{ fontFamily:'var(--mono)', fontSize:13, color:'var(--text)', marginBottom:6 }}>
+            <span style={{ color:'var(--muted)', fontSize:11 }}>{rec.audit_type?.toUpperCase()} · </span>
+            {rec.param}
+          </div>
+          <div style={{ display:'flex', alignItems:'center', gap:8, fontFamily:'var(--mono)', fontSize:12 }}>
+            <span style={{ color:'var(--danger)', textDecoration:'line-through', opacity:0.7 }}>
+              {rec.current_value}
+            </span>
+            <span style={{ color:'var(--muted)' }}>→</span>
+            <span style={{ color:'var(--success)', fontWeight:700 }}>
+              {rec.proposed_value}
+            </span>
+          </div>
+        </div>
+
+        {/* Right: badges + actions */}
+        <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+          {/* Confidence badge */}
+          <span style={{
+            fontFamily:'var(--mono)', fontSize:10, letterSpacing:1,
+            padding:'3px 8px', borderRadius:4,
+            background: `${confColor[conf] || 'var(--muted)'}22`,
+            color: confColor[conf] || 'var(--muted)',
+            border: `1px solid ${confColor[conf] || 'var(--muted)'}44`,
+          }}>
+            {confLabel}
+          </span>
+
+          {/* Status badge (for non-pending) */}
+          {rec.status !== 'pending' && (
+            <span style={{
+              fontFamily:'var(--mono)', fontSize:10, letterSpacing:1,
+              padding:'3px 8px', borderRadius:4,
+              background: `${statusColor[rec.status] || 'var(--muted)'}22`,
+              color: statusColor[rec.status] || 'var(--muted)',
+              border: `1px solid ${statusColor[rec.status] || 'var(--muted)'}44`,
+            }}>
+              {rec.status.toUpperCase()}
+            </span>
+          )}
+
+          {showActions && (
+            <>
+              <button className="btn btn-primary" style={{ fontSize:11, padding:'5px 14px' }} onClick={onApprove}>
+                ✓ Approve
+              </button>
+              <button className="btn btn-secondary" style={{ fontSize:11, padding:'5px 14px', color:'var(--danger)' }} onClick={onReject}>
+                ✕ Reject
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Reasoning — expandable */}
+      <div style={{ marginTop:10 }}>
+        <button
+          onClick={() => setExpanded(e => !e)}
+          style={{ background:'none', border:'none', color:'var(--muted)', fontFamily:'var(--mono)', fontSize:10, cursor:'pointer', letterSpacing:1, padding:0 }}
+        >
+          {expanded ? '▲ HIDE REASONING' : '▼ SHOW REASONING'}
+        </button>
+        {expanded && (
+          <div style={{ marginTop:8, fontSize:12, color:'var(--text)', lineHeight:1.6, opacity:0.85 }}>
+            {rec.reasoning}
+            {rec.reviewer_notes && (
+              <div style={{ marginTop:8, fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)' }}>
+                Notes: {rec.reviewer_notes}
+              </div>
+            )}
+            {rec.applied_at && (
+              <div style={{ marginTop:4, fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)' }}>
+                Applied: {new Date(rec.applied_at).toLocaleString()}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

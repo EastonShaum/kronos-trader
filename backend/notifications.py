@@ -218,6 +218,29 @@ def send_prediction_summary(predictions: list) -> None:
     _fire(_send())
 
 
+def send_audit_summary(rec_count: int, audit_type: str) -> None:
+    """Send an audit-complete embed with pending recommendation count. Non-blocking."""
+    async def _send():
+        payload = {
+            "embeds": [{
+                "title":       f"🔍  Audit Complete — {audit_type.title()}",
+                "color":       _COLOR_BLUE,
+                "description": (
+                    f"**{rec_count} recommendation{'s' if rec_count != 1 else ''}** pending review."
+                ),
+                "fields": [
+                    {"name": "Audit Type", "value": audit_type.title(), "inline": True},
+                    {"name": "Pending",    "value": str(rec_count),     "inline": True},
+                ],
+                "footer":    _footer(),
+                "timestamp": _iso_now(),
+            }]
+        }
+        await _post(payload)
+
+    _fire(_send())
+
+
 # -------------------------------------------------------
 # Awaitable — used by the test API route
 # -------------------------------------------------------

@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from database import init_db, get_db, Portfolio, Trade, Prediction, PriceSnapshot, MarketType
+from database import init_db, get_db, Portfolio, Trade, Prediction, PriceSnapshot, MarketType, AuditRecommendation
 
 # -------------------------------------------------------
 # Basic Auth middleware (disabled — comment back in to re-enable)
@@ -76,6 +76,8 @@ from database import init_db, get_db, Portfolio, Trade, Prediction, PriceSnapsho
 from data_fetcher import MarketDataFetcher
 from kronos_engine import run_prediction, run_dual_prediction
 from trading_engine import PaperTradingEngine
+from outcome_recorder import record_outcomes
+from price_monitor import run_price_monitor, _last_run_info as _monitor_info
 
 _log_file = pathlib.Path(__file__).parent / "kronos.log"
 logging.basicConfig(
@@ -101,6 +103,9 @@ scheduler = AsyncIOScheduler()
 # Markets currently running a prediction cycle — checked by the dashboard
 # to keep the trigger button disabled until the run completes.
 _active_predictions: set = set()
+
+# Benchmark results cache — avoids expensive recompute on every API call
+_benchmarks_cache: dict = {"result": None, "computed_at": None}
 
 
 # -------------------------------------------------------
@@ -260,6 +265,103 @@ async def lifespan(app: FastAPI):
         id="predict_forex",  misfire_grace_time=300,
     )
 
+    # Outcome recorder — runs hourly, offset 5 min so it never fires with predictions
+    async def outcome_recorder_job():
+        logger.info("[scheduler] outcome_recorder_job starting")
+        try:
+            from database import SessionLocal
+            db = SessionLocal()
+            count = await asyncio.to_thread(record_outcomes, db)
+            logger.info(f"[scheduler] outcome_recorder_job: {count} outcomes recorded")
+        except Exception as e:
+            logger.error(f"[scheduler] outcome_recorder_job error: {e}", exc_info=True)
+        finally:
+            db.close()
+
+    scheduler.add_job(
+        outcome_recorder_job,
+        IntervalTrigger(minutes=60, start_date=now + timedelta(minutes=5)),
+        id="outcome_recorder",
+        misfire_grace_time=300,
+    )
+
+    # Price monitor — intraday stop-loss/take-profit checks every 3 minutes
+    scheduler.add_job(
+        lambda: run_price_monitor(trader),
+        IntervalTrigger(minutes=3, start_date=now + timedelta(seconds=15)),
+        id="price_monitor",
+        misfire_grace_time=60,
+    )
+
+    # Candle append — hourly, offset 30 min so it doesn't collide with predictions
+    async def candle_append_job():
+        logger.info("[scheduler] candle_append_job starting")
+        try:
+            from candle_backfill import run_candle_backfill
+            await asyncio.to_thread(run_candle_backfill, None, True)  # incremental=True
+        except Exception as e:
+            logger.error(f"[scheduler] candle_append_job error: {e}", exc_info=True)
+
+    scheduler.add_job(
+        candle_append_job,
+        IntervalTrigger(minutes=60, start_date=now + timedelta(minutes=30)),
+        id="candle_append",
+        misfire_grace_time=300,
+    )
+
+    from apscheduler.triggers.cron import CronTrigger
+
+    # Weekly benchmarks — Sunday at 04:00 UTC (2h after audit to avoid overlap)
+    async def weekly_benchmark_job():
+        logger.info("[scheduler] weekly_benchmark_job starting")
+        try:
+            from benchmarks import run_all_benchmarks
+            from database import SessionLocal as _SL
+            db_bm = _SL()
+            result = await asyncio.to_thread(run_all_benchmarks, db_bm)
+            db_bm.close()
+            _benchmarks_cache["result"]      = result
+            _benchmarks_cache["computed_at"] = result.get("computed_at", datetime.utcnow().isoformat())
+            logger.info("[scheduler] weekly_benchmark_job complete")
+        except Exception as e:
+            logger.error(f"[scheduler] weekly_benchmark_job error: {e}", exc_info=True)
+
+    scheduler.add_job(
+        weekly_benchmark_job,
+        CronTrigger(day_of_week="sun", hour=4, minute=0, timezone=pytz.UTC),
+        id="weekly_benchmarks",
+        misfire_grace_time=3600,
+    )
+
+    # Weekly audit — runs Sunday at 02:00 UTC
+    # First Sunday of the month also triggers the deeper monthly pass
+    async def weekly_audit_job():
+        logger.info("[scheduler] weekly_audit_job starting")
+        try:
+            from audit_engine import run_audit
+            import notifications
+            from database import SessionLocal as _SL
+            db_audit = _SL()
+            now_dt = datetime.now(pytz.UTC)
+            audit_type = (
+                "monthly"
+                if now_dt.day <= 7 and now_dt.weekday() == 6
+                else "weekly"
+            )
+            recs = await asyncio.to_thread(run_audit, db_audit, audit_type)
+            db_audit.close()
+            if recs:
+                notifications.send_audit_summary(len(recs), audit_type)
+        except Exception as e:
+            logger.error(f"[scheduler] weekly_audit_job error: {e}", exc_info=True)
+
+    scheduler.add_job(
+        weekly_audit_job,
+        CronTrigger(day_of_week="sun", hour=2, minute=0, timezone=pytz.UTC),
+        id="weekly_audit",
+        misfire_grace_time=3600,
+    )
+
     scheduler.start()
     logger.info(f"✅ Scheduler started (predictions every {interval_min} min).")
     yield
@@ -310,7 +412,7 @@ def get_portfolio(market: str, db: Session = Depends(get_db)):
 @app.get("/api/trades")
 def get_trades(
     market: Optional[str] = None,
-    limit: int = 50,
+    limit: int = 100,
     db: Session = Depends(get_db)
 ):
     q = db.query(Trade)
@@ -347,7 +449,7 @@ def get_trades(
 @app.get("/api/predictions")
 def get_predictions(
     symbol: Optional[str] = None,
-    limit: int = 20,
+    limit: int = 100,
     db: Session = Depends(get_db)
 ):
     q = db.query(Prediction)
@@ -420,30 +522,48 @@ async def manual_trigger(req: TriggerRequest, background_tasks: BackgroundTasks)
 # Routes — Price Snapshots
 # -------------------------------------------------------
 @app.get("/api/prices")
-def get_prices(db: Session = Depends(get_db)):
-    """Latest price snapshot for all tracked symbols."""
-    results = {}
-    for market in ["crypto", "stocks", "forex"]:
-        mt = MarketType(market)
-        # Get latest snapshot per symbol
-        latest = (
-            db.query(PriceSnapshot)
-            .filter(PriceSnapshot.market == mt)
-            .order_by(PriceSnapshot.fetched_at.desc())
-            .limit(20)
-            .all()
-        )
-        seen = {}
-        for snap in latest:
-            if snap.symbol not in seen:
-                seen[snap.symbol] = {
-                    "symbol":     snap.symbol,
-                    "price":      round(snap.price, 4),
-                    "change_24h": round(snap.change_24h or 0, 2),
-                    "fetched_at": snap.fetched_at.isoformat(),
-                }
-        results[market] = list(seen.values())
-    return results
+async def get_prices():
+    """Live prices for all configured symbols (reads symbols from settings)."""
+    settings = load_settings()
+    disabled = set(settings.get("disabled_symbols", []))
+    all_symbols = {
+        "crypto": [s for s in settings.get("symbols", {}).get("crypto", CRYPTO_SYMBOLS) if s not in disabled],
+        "stocks": [s for s in settings.get("symbols", {}).get("stocks", STOCK_SYMBOLS)  if s not in disabled],
+    }
+
+    result: dict = {"crypto": [], "stocks": [], "forex": []}
+
+    for market, symbols in all_symbols.items():
+        for symbol in symbols:
+            try:
+                df = await asyncio.to_thread(fetcher.get_ohlcv, market, symbol, 2)
+                if df is not None and not df.empty:
+                    price      = float(df["close"].iloc[-1])
+                    prev       = float(df["close"].iloc[-2]) if len(df) > 1 else price
+                    change_24h = round(((price - prev) / prev) * 100, 2)
+                else:
+                    price      = 0.0
+                    change_24h = 0.0
+
+                result[market].append({
+                    "symbol":      symbol.replace("/USDT", ""),
+                    "full_symbol": symbol,
+                    "price":       price,
+                    "change_24h":  change_24h,
+                    "fetched_at":  datetime.utcnow().isoformat(),
+                })
+            except Exception as e:
+                logger.warning(f"Price fetch failed for {symbol}: {e}")
+                result[market].append({
+                    "symbol":      symbol.replace("/USDT", ""),
+                    "full_symbol": symbol,
+                    "price":       0.0,
+                    "change_24h":  0.0,
+                    "fetched_at":  datetime.utcnow().isoformat(),
+                    "error":       str(e),
+                })
+
+    return result
 
 
 # -------------------------------------------------------
@@ -467,6 +587,129 @@ def scheduler_status():
 @app.get("/api/health")
 def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.get("/api/monitor/status")
+async def monitor_status():
+    """Last price-monitor run stats."""
+    return _monitor_info
+
+
+# -------------------------------------------------------
+# Routes — Outcome recorder (manual trigger)
+# -------------------------------------------------------
+@app.post("/api/outcomes/trigger")
+async def trigger_outcome_recording():
+    """Manually trigger outcome recording for all eligible predictions."""
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        count = await asyncio.to_thread(record_outcomes, db)
+        return {"status": "ok", "outcomes_recorded": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+# -------------------------------------------------------
+# Routes — Manual trade close
+# -------------------------------------------------------
+@app.post("/api/trades/{trade_id}/close")
+async def manual_close_trade(trade_id: int, request: Request):
+    """Manually close an open position at current market price."""
+    from database import SessionLocal, Portfolio, TradeStatus, TradeDirection
+    body = await request.json()
+    reason = body.get("reason", "manual_sell")
+
+    db = SessionLocal()
+    try:
+        trade = db.query(Trade).filter(
+            Trade.id == trade_id,
+            Trade.status == TradeStatus.OPEN,
+        ).first()
+
+        if not trade:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Open trade {trade_id} not found",
+            )
+
+        portfolio = db.query(Portfolio).filter(
+            Portfolio.id == trade.portfolio_id
+        ).first()
+        market = portfolio.market.value if portfolio else "stocks"
+
+        df = await asyncio.to_thread(fetcher.get_ohlcv, market, trade.symbol, 2)
+
+        if df is None or df.empty:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Could not fetch current price for {trade.symbol}",
+            )
+
+        current_price = float(df["close"].iloc[-1])
+
+        if trade.direction == TradeDirection.BUY:
+            pnl = (current_price - trade.price) * trade.quantity
+            pnl_pct = ((current_price - trade.price) / trade.price) * 100
+        else:
+            pnl = (trade.price - current_price) * trade.quantity
+            pnl_pct = ((trade.price - current_price) / trade.price) * 100
+
+        existing_notes = trade.notes or ""
+        trade.status = TradeStatus.CLOSED
+        trade.realized_pnl = round(pnl, 4)
+        trade.closed_at = datetime.utcnow()
+        trade.notes = (
+            existing_notes
+            + f" | Closed manually: {reason}"
+            + f" @ ${current_price:.4f} ({pnl_pct:+.2f}%)"
+        )
+
+        if portfolio:
+            if trade.direction == TradeDirection.BUY:
+                portfolio.cash_balance += current_price * trade.quantity
+            else:
+                portfolio.cash_balance += trade.total_value - pnl
+
+        db.commit()
+
+        logger.info(
+            f"Manual close: trade {trade_id} {trade.symbol} "
+            f"@ ${current_price:.4f} PnL={pnl:+.4f} ({pnl_pct:+.2f}%)"
+        )
+
+        # Discord notification (best-effort)
+        try:
+            settings = load_settings()
+            if settings.get("notifications", {}).get("discord_enabled"):
+                from notifications import send_trade_notification
+                await asyncio.to_thread(
+                    send_trade_notification,
+                    "CLOSED (Manual)", trade.symbol, current_price, pnl, reason,
+                )
+        except Exception as notify_err:
+            logger.warning(f"Discord notification failed: {notify_err}")
+
+        return {
+            "status": "closed",
+            "trade_id": trade_id,
+            "symbol": trade.symbol,
+            "close_price": current_price,
+            "pnl": round(pnl, 4),
+            "pnl_pct": round(pnl_pct, 2),
+            "reason": reason,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Manual close error for trade {trade_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
 
 
 @app.post("/api/notifications/test")
@@ -589,7 +832,7 @@ DEFAULT_SETTINGS = {
         "min_confidence":         0.75,
         "stop_loss_pct":          0.03,
         "take_profit_pct":        0.06,
-        "min_predicted_move_pct": 0.02,
+        "min_predicted_move_pct": 0.03,
     },
     "prediction": {
         "interval_minutes":  60,
@@ -608,8 +851,21 @@ DEFAULT_SETTINGS = {
         "discord_webhook_url": "",
     },
     "models": {
-        "active_model":    "small",
-        "dual_model_mode": True,
+        "active_model":      "small",
+        "dual_model_mode":   True,
+        "require_agreement": True,
+    },
+    "costs": {
+        "enabled":       True,
+        "model_version": "v1",
+        "crypto":  {"fee_bps_per_side": 40, "slippage_bps_per_side": 5},
+        "stocks":  {"fee_bps_per_side": 0,  "slippage_bps_per_side": 10},
+        "dynamic_slippage": {
+            "enabled": False,
+            "k":       0.25,
+            "note":    "slippage_bps = k * ((high-low)/close) * 10000 on the fill candle",
+        },
+        "symbol_slippage_override_bps": {},
     },
 }
 
@@ -777,76 +1033,168 @@ def get_chart_data(market: str, symbol: str, limit: int = 100):
 
 
 # -------------------------------------------------------
-# Prediction Accuracy
+# Prediction Accuracy — real outcome data (recorded 24h post-prediction)
 # -------------------------------------------------------
 @app.get("/api/accuracy")
-def get_accuracy(hours: int = 24, db: Session = Depends(get_db)):
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
-    preds  = (
-        db.query(Prediction)
-        .filter(Prediction.created_at >= cutoff)
-        .order_by(Prediction.created_at.asc())
-        .all()
-    )
+def get_accuracy(db: Session = Depends(get_db)):
+    completed = db.query(Prediction).filter(
+        Prediction.was_correct != None  # noqa: E711
+    ).all()
 
-    results = []
-    price_cache = {}
-    for p in preds:
-        sym = p.symbol
-        if sym not in price_cache:
-            try:
-                snap = (
-                    db.query(PriceSnapshot)
-                    .filter(PriceSnapshot.symbol.contains(sym.split("/")[0]))
-                    .order_by(PriceSnapshot.fetched_at.desc())
-                    .first()
-                )
-                price_cache[sym] = snap.price if snap else None
-            except Exception:
-                price_cache[sym] = None
+    # Also count predictions still awaiting outcomes
+    pending_count = db.query(Prediction).filter(
+        Prediction.actual_close == None,  # noqa: E711
+        Prediction.created_at <= datetime.utcnow() - timedelta(hours=24),
+    ).count()
 
-        actual_price = price_cache.get(sym)
-        if actual_price is None:
+    awaiting_count = db.query(Prediction).filter(
+        Prediction.actual_close == None,  # noqa: E711
+        Prediction.created_at > datetime.utcnow() - timedelta(hours=24),
+    ).count()
+
+    oldest_pending = None
+    if pending_count > 0 or awaiting_count > 0:
+        op = db.query(Prediction).filter(
+            Prediction.actual_close == None  # noqa: E711
+        ).order_by(Prediction.created_at.asc()).first()
+        if op:
+            delta_h = (datetime.utcnow() - op.created_at).total_seconds() / 3600
+            oldest_pending = round(delta_h, 1)
+
+    if not completed:
+        return {
+            "has_data": False,
+            "message": (
+                "No outcomes recorded yet. "
+                "Outcomes are recorded automatically 24h after each prediction."
+            ),
+            "total_with_outcomes": 0,
+            "pending_outcomes": pending_count,
+            "awaiting_24h": awaiting_count,
+            "oldest_pending_hours": oldest_pending,
+        }
+
+    def calc_stats(preds):
+        if not preds:
+            return None
+        correct = sum(1 for p in preds if p.was_correct)
+        total = len(preds)
+        errors = []
+        for p in preds:
+            if p.actual_close and p.current_price and p.outcome_pct is not None:
+                pred_pct = (p.predicted_close - p.current_price) / p.current_price * 100
+                errors.append(abs(pred_pct - p.outcome_pct))
+        avg_error = round(sum(errors) / len(errors), 2) if errors else None
+        return {
+            "total":        total,
+            "correct":      correct,
+            "accuracy_pct": round(correct / total * 100, 1),
+            "avg_error_pct": avg_error,
+        }
+
+    overall     = calc_stats(completed)
+    small_preds = [p for p in completed if p.model_name == "small"]
+    mini_preds  = [p for p in completed if p.model_name == "mini"]
+
+    symbols: dict = {}
+    for p in completed:
+        symbols.setdefault(p.symbol, []).append(p)
+    by_symbol = {sym: calc_stats(preds) for sym, preds in symbols.items()}
+
+    markets: dict = {}
+    for p in completed:
+        mk = p.market.value if hasattr(p.market, "value") else str(p.market)
+        markets.setdefault(mk, []).append(p)
+    by_market = {m: calc_stats(preds) for m, preds in markets.items()}
+
+    high_conf = [p for p in completed if (p.confidence or 0) >= 0.75]
+
+    # Agreement accuracy — small+mini pairs within 120s, same symbol.
+    # Preload all mini predictions with outcomes into a dict to avoid N+1 queries.
+    # Key: (symbol, minute_bucket) → list of mini predictions.
+    from collections import defaultdict
+    mini_by_key: dict = defaultdict(list)
+    for p in completed:
+        if p.model_name == "mini":
+            # bucket to the nearest 2-minute window
+            bucket = p.created_at.replace(second=0, microsecond=0)
+            mini_by_key[(p.symbol, bucket)].append(p)
+
+    paired_correct = 0
+    paired_total   = 0
+    seen_pairs: set = set()
+    for p in completed:
+        if p.model_name != "small":
             continue
+        # Check the three buckets covering ±120s
+        p_minute = p.created_at.replace(second=0, microsecond=0)
+        partner = None
+        for delta_min in (-2, -1, 0, 1, 2):
+            bucket = p_minute + timedelta(minutes=delta_min)
+            for candidate in mini_by_key.get((p.symbol, bucket), []):
+                diff = abs((candidate.created_at - p.created_at).total_seconds())
+                if diff <= 120:
+                    partner = candidate
+                    break
+            if partner:
+                break
+        if not partner:
+            continue
+        pair_key = (min(p.id, partner.id), max(p.id, partner.id))
+        if pair_key in seen_pairs:
+            continue
+        seen_pairs.add(pair_key)
+        p_dir  = "UP" if p.predicted_close > p.current_price else "DOWN"
+        pt_dir = "UP" if partner.predicted_close > partner.current_price else "DOWN"
+        if p_dir == pt_dir:
+            paired_total += 1
+            if p.was_correct:
+                paired_correct += 1
 
-        pred_error_pct = None
-        if p.predicted_close and actual_price:
-            pred_error_pct = round(
-                ((p.predicted_close - actual_price) / actual_price) * 100, 2
-            )
+    agreement_accuracy = None
+    if paired_total > 0:
+        agreement_accuracy = {
+            "total":        paired_total,
+            "correct":      paired_correct,
+            "accuracy_pct": round(paired_correct / paired_total * 100, 1),
+        }
 
-        direction_correct = None
-        if p.predicted_close and actual_price and p.current_price:
-            pred_went_up   = p.predicted_close > p.current_price
-            actual_went_up = actual_price > p.current_price
-            direction_correct = (pred_went_up == actual_went_up)
-
-        results.append({
-            "id":                  p.id,
-            "symbol":              p.symbol,
-            "market":              p.market.value,
-            "predicted_at":        p.created_at.isoformat(),
-            "price_at_prediction": round(p.current_price, 4),
-            "predicted_close":     round(p.predicted_close, 4),
-            "actual_price":        round(actual_price, 4),
-            "error_pct":           pred_error_pct,
-            "direction_correct":   direction_correct,
-            "confidence":          round((p.confidence or 0) * 100, 1),
-        })
-
-    total             = len(results)
-    correct_direction = sum(1 for r in results if r["direction_correct"] is True)
-    avg_error         = (
-        sum(abs(r["error_pct"]) for r in results if r["error_pct"] is not None) / total
-        if total > 0 else 0
-    )
+    # Chart data — last 50 completed predictions
+    chart_preds = sorted(
+        [p for p in completed if p.outcome_pct is not None],
+        key=lambda x: x.created_at,
+    )[-50:]
+    chart_data = [
+        {
+            "created_at":    str(p.created_at),
+            "symbol":        p.symbol,
+            "model":         p.model_name,
+            "predicted_pct": round(
+                (p.predicted_close - p.current_price) / p.current_price * 100, 2
+            ),
+            "actual_pct":    round(p.outcome_pct, 2),
+            "was_correct":   p.was_correct,
+            "confidence":    round((p.confidence or 0) * 100, 1),
+        }
+        for p in chart_preds
+    ]
 
     return {
-        "predictions":        results,
-        "total":              total,
-        "direction_accuracy": round((correct_direction / total) * 100, 1) if total > 0 else 0,
-        "avg_error_pct":      round(avg_error, 2),
-        "hours":              hours,
+        "has_data":             True,
+        "total_with_outcomes":  len(completed),
+        "pending_outcomes":     pending_count,
+        "awaiting_24h":         awaiting_count,
+        "oldest_pending_hours": oldest_pending,
+        "overall":              overall,
+        "by_model": {
+            "small": calc_stats(small_preds),
+            "mini":  calc_stats(mini_preds),
+        },
+        "by_symbol":           by_symbol,
+        "by_market":           by_market,
+        "high_confidence":     calc_stats(high_conf),
+        "agreement_accuracy":  agreement_accuracy,
+        "chart_data":          chart_data,
     }
 
 # -------------------------------------------------------
@@ -976,6 +1324,310 @@ def get_equity_curve(
         "best_trade":       round(best_trade_val, 2) if best_trade_val is not None else 0,
         "worst_trade":      round(worst_trade_val, 2) if worst_trade_val is not None else 0,
     }
+
+
+# -------------------------------------------------------
+# Routes — Audit System
+# -------------------------------------------------------
+
+class AuditTriggerRequest(BaseModel):
+    audit_type: str = "weekly"  # "weekly" | "monthly"
+
+class RejectRequest(BaseModel):
+    reviewer_notes: Optional[str] = None
+
+
+@app.post("/api/audit/trigger")
+async def trigger_audit(req: AuditTriggerRequest, background_tasks: BackgroundTasks):
+    """Manually kick off an audit run."""
+    if req.audit_type not in ("weekly", "monthly"):
+        raise HTTPException(400, "audit_type must be 'weekly' or 'monthly'")
+
+    async def _run():
+        from audit_engine import run_audit
+        import notifications
+        from database import SessionLocal as _SL
+        db_audit = _SL()
+        try:
+            recs = await asyncio.to_thread(run_audit, db_audit, req.audit_type)
+            if recs:
+                notifications.send_audit_summary(len(recs), req.audit_type)
+        except Exception as e:
+            logger.error(f"Manual audit error: {e}", exc_info=True)
+        finally:
+            db_audit.close()
+
+    background_tasks.add_task(_run)
+    return {"status": "triggered", "audit_type": req.audit_type}
+
+
+@app.get("/api/audit/recommendations")
+def get_audit_recommendations(
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """List audit recommendations, optionally filtered by status."""
+    q = db.query(AuditRecommendation)
+    if status:
+        q = q.filter(AuditRecommendation.status == status)
+    rows = q.order_by(AuditRecommendation.created_at.desc()).all()
+    return [
+        {
+            "id":             r.id,
+            "created_at":     r.created_at.isoformat(),
+            "audit_type":     r.audit_type,
+            "source":         r.source or "scheduled_audit",
+            "category":       r.category,
+            "param":          r.param,
+            "current_value":  r.current_value,
+            "proposed_value": r.proposed_value,
+            "confidence":     r.confidence,
+            "reasoning":      r.reasoning,
+            "status":         r.status,
+            "applied_at":     r.applied_at.isoformat() if r.applied_at else None,
+            "reviewer_notes": r.reviewer_notes,
+        }
+        for r in rows
+    ]
+
+
+@app.post("/api/audit/recommendations/{rec_id}/approve")
+def approve_audit_recommendation(rec_id: int, db: Session = Depends(get_db)):
+    """Approve a recommendation and apply the change via the settings write path."""
+    rec = db.query(AuditRecommendation).filter(AuditRecommendation.id == rec_id).first()
+    if not rec:
+        raise HTTPException(404, "Recommendation not found")
+    if rec.status != "pending":
+        raise HTTPException(400, f"Recommendation is already '{rec.status}'")
+
+    # Apply the change using the existing settings write path
+    settings = load_settings()
+    applied = False
+
+    if rec.category == "risk_param":
+        try:
+            val = float(rec.proposed_value)
+            # Settings stores risk params as decimals (e.g. 3.0 means 3%)
+            # Audit stores them as human-readable % strings (e.g. "-3.0" for stop_loss)
+            param_map = {
+                "stop_loss_pct":          ("risk", "stop_loss_pct",          lambda v: abs(v) / 100),
+                "take_profit_pct":        ("risk", "take_profit_pct",        lambda v: v / 100),
+                "min_confidence":         ("risk", "min_confidence",         lambda v: v / 100),
+                "min_predicted_move_pct": ("risk", "min_predicted_move_pct", lambda v: v / 100),
+                "position_size_pct":      ("risk", "position_size_pct",      lambda v: v / 100),
+            }
+            if rec.param in param_map:
+                section, key, transform = param_map[rec.param]
+                settings[section][key] = transform(val)
+                save_settings(settings)
+                applied = True
+        except (ValueError, KeyError) as e:
+            raise HTTPException(400, f"Could not apply risk_param change: {e}")
+
+    elif rec.category == "symbol_list":
+        try:
+            sym = rec.proposed_value
+            if rec.param == "add_symbol":
+                # Determine market from symbol format
+                market = (
+                    "crypto" if "/" in sym or "USDT" in sym else
+                    "forex"  if "_" in sym else
+                    "stocks"
+                )
+                syms = settings.get("symbols", {}).get(market, [])
+                if sym not in syms:
+                    syms.append(sym)
+                    settings.setdefault("symbols", {})[market] = syms
+                    save_settings(settings)
+                applied = True
+            elif rec.param == "remove_symbol":
+                disabled = settings.get("disabled_symbols", [])
+                if sym not in disabled:
+                    disabled.append(sym)
+                    settings["disabled_symbols"] = disabled
+                    save_settings(settings)
+                applied = True
+        except Exception as e:
+            raise HTTPException(400, f"Could not apply symbol_list change: {e}")
+
+    elif rec.category == "model_strategy":
+        try:
+            models_cfg = settings.get("models", {})
+            if rec.param == "active_model":
+                models_cfg["active_model"] = rec.proposed_value
+                applied = True
+            elif rec.param == "dual_model_mode":
+                models_cfg["dual_model_mode"] = rec.proposed_value.lower() in ("true", "1", "yes")
+                applied = True
+            elif rec.param == "require_agreement":
+                models_cfg["require_agreement"] = rec.proposed_value.lower() in ("true", "1", "yes")
+                applied = True
+            if applied:
+                settings["models"] = models_cfg
+                save_settings(settings)
+        except Exception as e:
+            raise HTTPException(400, f"Could not apply model_strategy change: {e}")
+
+    db.query(AuditRecommendation).filter(AuditRecommendation.id == rec_id).update({
+        "status":     "applied" if applied else "approved",
+        "applied_at": datetime.utcnow() if applied else None,
+    })
+    db.commit()
+
+    return {"status": "applied" if applied else "approved", "id": rec_id}
+
+
+@app.post("/api/audit/recommendations/{rec_id}/reject")
+def reject_audit_recommendation(
+    rec_id: int,
+    body: RejectRequest = Body(RejectRequest()),
+    db: Session = Depends(get_db),
+):
+    """Reject a recommendation with optional reviewer notes."""
+    rec = db.query(AuditRecommendation).filter(AuditRecommendation.id == rec_id).first()
+    if not rec:
+        raise HTTPException(404, "Recommendation not found")
+    if rec.status != "pending":
+        raise HTTPException(400, f"Recommendation is already '{rec.status}'")
+
+    db.query(AuditRecommendation).filter(AuditRecommendation.id == rec_id).update({
+        "status":         "rejected",
+        "reviewer_notes": body.reviewer_notes,
+    })
+    db.commit()
+    return {"status": "rejected", "id": rec_id}
+
+
+# -------------------------------------------------------
+# Routes — Benchmarks
+# -------------------------------------------------------
+
+@app.get("/api/benchmarks")
+async def get_benchmarks(refresh: bool = False, db: Session = Depends(get_db)):
+    """
+    Return cached benchmark results.  Full recompute takes 60-120s on a Pi;
+    use ?refresh=true to force it.  Cache is also populated by the weekly
+    Sunday 04:00 UTC scheduler job.
+    """
+    global _benchmarks_cache
+
+    if not refresh and _benchmarks_cache.get("result"):
+        result = _benchmarks_cache["result"]
+        result["_cached"] = True
+        result["_cache_age_sec"] = (
+            (datetime.utcnow() - datetime.fromisoformat(_benchmarks_cache["computed_at"])).total_seconds()
+            if _benchmarks_cache.get("computed_at") else None
+        )
+        return result
+
+    # Recompute — run in thread pool to avoid blocking the event loop
+    try:
+        from benchmarks import run_all_benchmarks
+        result = await asyncio.to_thread(run_all_benchmarks, db)
+        _benchmarks_cache["result"]      = result
+        _benchmarks_cache["computed_at"] = result.get("computed_at", datetime.utcnow().isoformat())
+        result["_cached"] = False
+        return result
+    except Exception as e:
+        logger.error(f"Benchmark computation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/benchmarks/status")
+def get_benchmarks_status(db: Session = Depends(get_db)):
+    """
+    Return candle coverage status — whether data is sufficient to trust benchmarks.
+    """
+    try:
+        from benchmarks import check_coverage
+        return check_coverage(db)
+    except Exception as e:
+        logger.error(f"Coverage check failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/diagnostics/confidence")
+def get_diagnostics_confidence(db: Session = Depends(get_db)):
+    """
+    Per-confidence-bucket breakdown using corrected entry prediction linkage.
+    Previously the SELL trade's prediction_id (exit prediction) was used; this
+    endpoint always uses the corresponding BUY trade's prediction (entry signal).
+    """
+    try:
+        from diagnostics import run_confidence_stats
+        return run_confidence_stats(db)
+    except Exception as e:
+        logger.error(f"Confidence diagnostics failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/diagnostics/mfe-mae")
+def get_diagnostics_mfe_mae(db: Session = Depends(get_db)):
+    """
+    MFE (Maximum Favorable Excursion) and MAE (Maximum Adverse Excursion) analysis.
+    Requires candle data for the holding period of each trade.
+    """
+    try:
+        from diagnostics import run_mfe_mae
+        return run_mfe_mae(db)
+    except Exception as e:
+        logger.error(f"MFE/MAE diagnostics failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/diagnostics/exit-replay")
+def get_diagnostics_exit_replay(db: Session = Depends(get_db)):
+    """
+    Replay 5 exit policies on real historical entries:
+      baseline, atr_based, doubled_fixed, extended_hold, horizon_only.
+    Shows which exit policy would have produced the best net P&L.
+    Requires candle data for replay.
+    """
+    try:
+        from diagnostics import run_exit_replay
+        return run_exit_replay(db)
+    except Exception as e:
+        logger.error(f"Exit replay diagnostics failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/diagnostics/lag")
+def get_diagnostics_lag(db: Session = Depends(get_db)):
+    """
+    Prediction-to-execution lag analysis.
+    Measures:
+      - decision_lag_s: time from Prediction.created_at to BUY Trade.opened_at
+      - price_staleness_s: age of the most recent candle at prediction time
+      - batch_position_effect: correlation between position in a scheduler batch and P&L
+    Correlates each latency component with realised net P&L (Pearson r).
+    """
+    try:
+        from diagnostics import run_lag_analysis
+        return run_lag_analysis(db)
+    except Exception as e:
+        logger.error(f"Lag diagnostics failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/diagnostics/symbol-fit")
+def get_diagnostics_symbol_fit(db: Session = Depends(get_db)):
+    """
+    Symbol & model fit diagnostic. Read-only — no changes to symbol list or settings.
+
+    Returns:
+      phase1_model_linkage:    resolved model counts, date ranges, confound check
+      phase2_model_comparison: skipped (models are time-separated) or model stats
+      phase3_symbol_ranking:   per-symbol P&L, win rate, bootstrap 95% CI, trust flag
+      phase4_volatility:       ATR% per symbol correlated with P&L/win rate
+      phase5_btc_correlation:  hourly return correlation of MARA/RIOT/HUT vs BTC
+      summary:                 plain-language findings with evidence-strength ratings
+    """
+    try:
+        from symbol_fit import run_symbol_fit
+        return run_symbol_fit(db)
+    except Exception as e:
+        logger.error(f"Symbol-fit diagnostics failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

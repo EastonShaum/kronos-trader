@@ -4,7 +4,7 @@ Simulates trades based on Kronos predictions.
 Manages portfolios, positions, and PnL tracking.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,7 @@ from database import (
     MarketType, TradeDirection, TradeStatus, SessionLocal
 )
 import notifications
+from cost_model import apply_costs as _apply_costs
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ MIN_PREDICTED_MOVE_PCT = 0.02
 class PaperTradingEngine:
 
     def __init__(self):
-        pass
+        self._cooldowns = {}  # symbol -> datetime of last close
 
     # ---------------------------------------------------
     # Core: process a new prediction and decide to trade
@@ -85,35 +86,95 @@ class PaperTradingEngine:
         ).first()
 
         action_taken = {}
+        just_closed = False
 
         if existing_pos and existing_pos.quantity > 0:
             action_taken = self._maybe_close_position(
                 existing_pos, portfolio, pred, current, confidence, db
             )
+            if action_taken.get("action") == "closed":
+                just_closed = True
+
+        # FIX B — if we just closed this cycle, return immediately without re-entering
+        if just_closed:
+            db.commit()
+            self._recalculate_portfolio_pnl(portfolio.id, db)
+            return {
+                **action_taken,
+                "symbol":          symbol,
+                "confidence":      confidence,
+                "current_price":   current,
+                "predicted_close": pred_close,
+            }
+
+        # FIX A — cooldown: block re-entry for 1 full prediction cycle after any close
+        cooldown_seconds = 3600
+        if symbol in self._cooldowns:
+            elapsed = (datetime.utcnow() - self._cooldowns[symbol]).total_seconds()
+            if elapsed < cooldown_seconds:
+                logger.info(
+                    f"⏳ {symbol} cooldown active ({int(elapsed//60)}m elapsed, "
+                    f"{int((cooldown_seconds-elapsed)//60)}m remaining)"
+                )
+                db.commit()
+                return {"action": "none", "reason": "cooldown"}
 
         # --- Consider opening a new position ---
-        # Confidence is already a direction signal: fraction of predicted closes
-        # above current price. Use it alone — don't gate on pred_close > current,
-        # which is only the final candle and can contradict the overall signal.
-
         # Gate on minimum predicted price move to filter weak signals
         predicted_move_pct = abs(pred_close - current) / current if current else 0.0
 
         if confidence >= MIN_CONFIDENCE:
-            # Bullish signal — open if no position currently held
-            if not existing_pos or existing_pos.quantity == 0:
-                if predicted_move_pct < MIN_PREDICTED_MOVE_PCT:
-                    logger.info(
-                        f"Skipping {symbol} — predicted move {predicted_move_pct:.1%} "
-                        f"below minimum {MIN_PREDICTED_MOVE_PCT:.1%}"
-                    )
-                    action_taken = {"action": "none", "reason": "predicted_move_too_small"}
-                else:
-                    action_taken = self._open_position(
-                        symbol, portfolio, pred, current, TradeDirection.BUY, db
-                    )
+            # FIX C — block duplicate open positions via fresh DB query
+            existing = db.query(Position).filter(
+                Position.portfolio_id == portfolio.id,
+                Position.symbol == symbol,
+                Position.quantity > 0
+            ).first()
+            if existing:
+                logger.info(f"⚠️ {symbol} already has open position, skipping new entry")
+                db.commit()
+                return {"action": "none", "reason": "already_open"}
+
+            # FILTER A — dual-model agreement gate
+            try:
+                from main import load_settings
+                settings = load_settings()
+                require_agreement = settings.get("models", {}).get("require_agreement", True)
+            except ImportError:
+                require_agreement = True
+
+            if require_agreement:
+                other_model = 'mini' if pred_model == 'small' else 'small'
+                cutoff = datetime.utcnow() - timedelta(minutes=5)
+                other_pred = db.query(Prediction).filter(
+                    Prediction.symbol == symbol,
+                    Prediction.model_name == other_model,
+                    Prediction.created_at >= cutoff
+                ).order_by(Prediction.created_at.desc()).first()
+
+                if other_pred:
+                    other_bullish = other_pred.predicted_close > other_pred.current_price
+                    this_bullish  = pred.predicted_close > pred.current_price
+                    if other_bullish != this_bullish:
+                        logger.info(
+                            f"⚖️ {symbol} models disagree "
+                            f"({pred_model}={'UP' if this_bullish else 'DOWN'}, "
+                            f"{other_model}={'UP' if other_bullish else 'DOWN'}) — skipping"
+                        )
+                        db.commit()
+                        return {"action": "none", "reason": "model_disagreement"}
+
+            # Bullish signal — open position
+            if predicted_move_pct < MIN_PREDICTED_MOVE_PCT:
+                logger.info(
+                    f"Skipping {symbol} — predicted move {predicted_move_pct:.1%} "
+                    f"below minimum {MIN_PREDICTED_MOVE_PCT:.1%}"
+                )
+                action_taken = {"action": "none", "reason": "predicted_move_too_small"}
             else:
-                logger.info(f"Bullish signal for {symbol} but position already open (confidence={confidence:.1%})")
+                action_taken = self._open_position(
+                    symbol, portfolio, pred, current, TradeDirection.BUY, db
+                )
         elif confidence <= (1 - MIN_CONFIDENCE):
             # Bearish — skip shorts in paper trading
             logger.info(f"Bearish signal for {symbol} but skipping short (confidence={confidence:.1%})")
@@ -233,6 +294,15 @@ class PaperTradingEngine:
         portfolio.cash_balance += proceeds
         portfolio.total_pnl    += realized_pnl
 
+        costs = _apply_costs(
+            market         = portfolio.market.value,
+            symbol         = pos.symbol,
+            side           = "buy",
+            entry_price    = pos.avg_price,
+            exit_price     = price,
+            position_size  = pos.quantity,
+        )
+
         trade = Trade(
             portfolio_id  = portfolio.id,
             symbol        = pos.symbol,
@@ -242,11 +312,29 @@ class PaperTradingEngine:
             total_value   = proceeds,
             status        = TradeStatus.CLOSED,
             realized_pnl  = realized_pnl,
+            gross_pnl     = costs["gross_pnl"],
+            entry_fee     = costs["entry_fee"],
+            exit_fee      = costs["exit_fee"],
+            entry_slippage = costs["entry_slippage"],
+            exit_slippage  = costs["exit_slippage"],
+            net_pnl       = costs["net_pnl"],
+            cost_model_ver = costs["cost_model_ver"],
             prediction_id = pred.id,
             closed_at     = datetime.utcnow(),
             notes         = f"Closed: {reason}",
         )
         db.add(trade)
+
+        # Close the original BUY trade entry
+        open_buy = db.query(Trade).filter(
+            Trade.portfolio_id == portfolio.id,
+            Trade.symbol == pos.symbol,
+            Trade.direction == TradeDirection.BUY,
+            Trade.status == TradeStatus.OPEN
+            ).order_by(Trade.opened_at.desc()).first()
+        if open_buy:
+            open_buy.status = TradeStatus.CLOSED
+            open_buy.closed_at = datetime.utcnow()
 
         logger.info(f"📉 CLOSED {pos.symbol} @ {price:.4f} | PnL: ${realized_pnl:.2f} | Reason: {reason}")
         notifications.send_trade_closed(
@@ -261,6 +349,7 @@ class PaperTradingEngine:
 
         pos.quantity      = 0.0
         pos.unrealized_pnl = 0.0
+        self._cooldowns[pos.symbol] = datetime.utcnow()
 
         return {"action": "closed", "realized_pnl": realized_pnl, "reason": reason}
 

@@ -3,10 +3,11 @@ Database models for Kronos Trader
 """
 from sqlalchemy import (
     create_engine, Column, Integer, Float, String,
-    DateTime, Boolean, ForeignKey, Text, Enum
+    DateTime, Boolean, ForeignKey, Text, Enum, UniqueConstraint, text
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy import inspect as sa_inspect
 from datetime import datetime
 import enum
 import os
@@ -90,8 +91,20 @@ class Trade(Base):
     closed_at    = Column(DateTime, nullable=True)
     notes        = Column(Text, nullable=True)
 
-    portfolio  = relationship("Portfolio", back_populates="trades")
-    prediction = relationship("Prediction")
+    # Cost model columns — populated at close time; NULL on pre-migration rows
+    gross_pnl       = Column(Float, nullable=True)
+    entry_fee       = Column(Float, nullable=True)
+    exit_fee        = Column(Float, nullable=True)
+    entry_slippage  = Column(Float, nullable=True)
+    exit_slippage   = Column(Float, nullable=True)
+    net_pnl         = Column(Float, nullable=True)
+    cost_model_ver  = Column(String(10), nullable=True)
+    # Entry prediction linkage — for SELL trades, points to the BUY trade's prediction_id
+    entry_prediction_id = Column(Integer, ForeignKey("predictions.id"), nullable=True)
+
+    portfolio        = relationship("Portfolio", back_populates="trades")
+    prediction       = relationship("Prediction", foreign_keys=[prediction_id])
+    entry_prediction = relationship("Prediction", foreign_keys=[entry_prediction_id])
 
 
 # -------------------------------------------------------
@@ -114,6 +127,13 @@ class Prediction(Base):
     raw_output     = Column(Text, nullable=True)             # JSON candles
     created_at     = Column(DateTime, default=datetime.utcnow)
 
+    # Outcome columns — populated ~24h after prediction
+    actual_close         = Column(Float, nullable=True)      # real price 24h later
+    actual_direction     = Column(String(4), nullable=True)  # 'UP' or 'DOWN'
+    was_correct          = Column(Boolean, nullable=True)    # direction match
+    outcome_pct          = Column(Float, nullable=True)      # actual % move
+    outcome_recorded_at  = Column(DateTime, nullable=True)
+
 
 # -------------------------------------------------------
 # PriceSnapshot — latest market prices
@@ -130,9 +150,91 @@ class PriceSnapshot(Base):
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
+# -------------------------------------------------------
+# Candle — persisted OHLCV for benchmark reproducibility
+# -------------------------------------------------------
+class Candle(Base):
+    __tablename__ = "candles"
+
+    id        = Column(Integer, primary_key=True)
+    market    = Column(String(20), nullable=False)   # 'crypto' | 'stocks'
+    symbol    = Column(String(20), nullable=False)
+    timestamp = Column(DateTime, nullable=False)     # UTC, candle open
+    open      = Column(Float)
+    high      = Column(Float)
+    low       = Column(Float)
+    close     = Column(Float)
+    volume    = Column(Float)
+
+    __table_args__ = (
+        UniqueConstraint("market", "symbol", "timestamp", name="uq_candle_market_symbol_ts"),
+    )
+
+
+# -------------------------------------------------------
+# AuditRecommendation — AI-generated trading improvement suggestions
+# -------------------------------------------------------
+class AuditRecommendation(Base):
+    __tablename__ = "audit_recommendations"
+
+    id             = Column(Integer, primary_key=True)
+    created_at     = Column(DateTime, default=datetime.utcnow)
+    audit_type     = Column(String)          # "weekly" | "monthly" | "diagnostic"
+    category       = Column(String)          # "risk_param" | "symbol_list" | "model_strategy"
+    param          = Column(String)
+    current_value  = Column(String)
+    proposed_value = Column(String)
+    confidence     = Column(String)          # "low" | "medium" | "high" | "out_of_bounds"
+    reasoning      = Column(Text)
+    status         = Column(String, default="pending")  # pending|approved|rejected|applied
+    applied_at     = Column(DateTime, nullable=True)
+    reviewer_notes = Column(Text, nullable=True)
+    # Origin of the recommendation — distinguishes scheduled audit jobs from
+    # one-off diagnostic sessions that use the same approval queue.
+    source         = Column(String, default="scheduled_audit", nullable=True)
+
+
+def _migrate_cost_columns():
+    """Idempotent: add cost columns to trades table if they don't exist."""
+    insp = sa_inspect(engine)
+    existing = {c["name"] for c in insp.get_columns("trades")}
+    new_cols = [
+        ("gross_pnl",             "REAL"),
+        ("entry_fee",             "REAL"),
+        ("exit_fee",              "REAL"),
+        ("entry_slippage",        "REAL"),
+        ("exit_slippage",         "REAL"),
+        ("net_pnl",               "REAL"),
+        ("cost_model_ver",        "TEXT"),
+        ("entry_prediction_id",   "INTEGER"),
+    ]
+    with engine.connect() as conn:
+        for col_name, col_type in new_cols:
+            if col_name not in existing:
+                conn.execute(text(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}"))
+        conn.commit()
+
+
+def _migrate_audit_columns():
+    """Idempotent: add source column to audit_recommendations if it doesn't exist."""
+    insp = sa_inspect(engine)
+    try:
+        existing = {c["name"] for c in insp.get_columns("audit_recommendations")}
+    except Exception:
+        return  # table doesn't exist yet; create_all will handle it
+    with engine.connect() as conn:
+        if "source" not in existing:
+            conn.execute(text(
+                "ALTER TABLE audit_recommendations ADD COLUMN source TEXT DEFAULT 'scheduled_audit'"
+            ))
+        conn.commit()
+
+
 def init_db():
-    """Create all tables and seed portfolios if they don't exist."""
+    """Create all tables, run idempotent migrations, and seed portfolios."""
     Base.metadata.create_all(bind=engine)
+    _migrate_cost_columns()
+    _migrate_audit_columns()
     db = SessionLocal()
     try:
         for market, balance_env in [
