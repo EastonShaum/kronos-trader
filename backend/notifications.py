@@ -241,6 +241,27 @@ def send_audit_summary(rec_count: int, audit_type: str) -> None:
     _fire(_send())
 
 
+def send_audit_failure(audit_type: str, error: str) -> None:
+    """Send an audit-failed alert after retries are exhausted. Non-blocking."""
+    async def _send():
+        payload = {
+            "embeds": [{
+                "title":       f"⚠️  Audit Failed — {audit_type.title()}",
+                "color":       _COLOR_RED,
+                "description": "The audit run failed after retrying and produced no recommendations.",
+                "fields": [
+                    {"name": "Audit Type", "value": audit_type.title(),  "inline": True},
+                    {"name": "Error",      "value": f"```{error[:900]}```", "inline": False},
+                ],
+                "footer":    _footer(),
+                "timestamp": _iso_now(),
+            }]
+        }
+        await _post(payload)
+
+    _fire(_send())
+
+
 # -------------------------------------------------------
 # Awaitable — used by the test API route
 # -------------------------------------------------------
