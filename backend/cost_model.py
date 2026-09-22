@@ -62,6 +62,23 @@ def _bps_to_frac(bps: float) -> float:
     return bps / 10_000.0
 
 
+def _gross_pnl(side: str, entry_price: float, exit_price: float,
+               position_size: float) -> float:
+    """
+    Gross P&L for the side the position was opened on.
+
+    'buy'  (long)  profits when price rises: exit - entry
+    'sell' (short) profits when price falls: entry - exit
+
+    Every caller in the project passes side='buy', so this is behaviour-
+    preserving for all of them, including the live close path in
+    trading_engine._close_position.
+    """
+    if side == "sell":
+        return (entry_price - exit_price) * position_size
+    return (exit_price - entry_price) * position_size
+
+
 def _dynamic_slippage_bps(k: float, candle: dict | None) -> float | None:
     """Compute range-based slippage from fill candle OHLC, or None if unavailable."""
     if candle is None:
@@ -110,8 +127,11 @@ def apply_costs(
     """
     cfg = _load_cost_config()
 
+    if side not in ("buy", "sell"):
+        raise ValueError(f"side must be 'buy' or 'sell', got {side!r}")
+
     if not cfg.get("enabled", True):
-        gross = (exit_price - entry_price) * position_size
+        gross = _gross_pnl(side, entry_price, exit_price, position_size)
         return {
             "gross_pnl":      round(gross, 6),
             "entry_fee":      0.0,
@@ -157,7 +177,8 @@ def apply_costs(
     entry_slippage = entry_notional * _bps_to_frac(entry_slip_bps)
     exit_slippage  = exit_notional  * _bps_to_frac(exit_slip_bps)
 
-    gross_pnl = (exit_price - entry_price) * position_size
+    gross_pnl = _gross_pnl(side, entry_price, exit_price, position_size)
+    # Fees and slippage are charged on notional and are direction-agnostic.
     total_cost = entry_fee + exit_fee + entry_slippage + exit_slippage
     net_pnl    = gross_pnl - total_cost
 
