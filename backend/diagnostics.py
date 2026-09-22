@@ -44,6 +44,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from database import SessionLocal, Candle, Trade, Portfolio, Prediction, TradeStatus, TradeDirection
 from cost_model import apply_costs
+from exit_sim import simulate_exit
 
 # ── Constants (must match live trading_engine.py) ──────────────────────────
 LIVE_SL_PCT  = 0.03
@@ -153,29 +154,47 @@ def _walk_candles(
             "mfe_pct": 0.0, "mae_pct": 0.0, "signal_gaps": 0,
         }
 
+    # Price-based exit is delegated to the shared simulator, which applies the
+    # gap rule (fill at open when the bar opened through the level) and breaks
+    # a same-bar SL/TP tie in favour of the stop.
+    # simulate_exit rejects fractions outside [0, 1). The atr_based policy derives
+    # sl_abs arithmetically, so a level at or below zero is disabled here rather
+    # than raised on: a stop below zero can never be reached by a positive price.
+    sl_pct = None
+    if sl_abs is not None and 0.0 < sl_abs <= entry_price:
+        sl_pct = (entry_price - sl_abs) / entry_price
+    tp_pct = None
+    if tp_abs is not None and tp_abs >= entry_price:
+        tp_pct = (tp_abs - entry_price) / entry_price
+
+    bars = [
+        (
+            ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts,
+            row["open"], row["high"], row["low"], row["close"],
+        )
+        for ts, row in candle_window.iterrows()
+    ]
+    price_exit = simulate_exit(entry_price, bars, sl_pct, tp_pct)
+    price_exit_ts = price_exit.ts if price_exit is not None else None
+
     mfe_pct     = 0.0
     mae_pct     = 0.0
     signal_gaps = 0
     check_signal = bearish_preds is not None
 
-    for ts, row in candle_window.iterrows():
-        high  = float(row["high"])
-        low   = float(row["low"])
-        close = float(row["close"])
-        ts_dt = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+    for ts_dt, _open, high, low, close in bars:
+        high  = float(high)
+        low   = float(low)
+        close = float(close)
 
         # Track excursions across the full intra-bar range before any exit
         mfe_pct = max(mfe_pct, (high - entry_price) / entry_price * 100)
         mae_pct = max(mae_pct, (entry_price - low)  / entry_price * 100)
 
-        # 1. Take-profit (price trigger, intra-candle high)
-        if tp_abs is not None and high >= tp_abs:
-            return {"exit_price": tp_abs, "exit_ts": ts_dt, "exit_reason": "take_profit",
-                    "mfe_pct": mfe_pct, "mae_pct": mae_pct, "signal_gaps": signal_gaps}
-
-        # 2. Stop-loss (price trigger, intra-candle low)
-        if sl_abs is not None and low <= sl_abs:
-            return {"exit_price": sl_abs, "exit_ts": ts_dt, "exit_reason": "stop_loss",
+        # 1./2. Price trigger, as resolved by simulate_exit
+        if price_exit_ts is not None and ts_dt == price_exit_ts:
+            return {"exit_price": price_exit.exit_price, "exit_ts": ts_dt,
+                    "exit_reason": price_exit.reason,
                     "mfe_pct": mfe_pct, "mae_pct": mae_pct, "signal_gaps": signal_gaps}
 
         # 3. Bearish-signal check (hourly, after price triggers)

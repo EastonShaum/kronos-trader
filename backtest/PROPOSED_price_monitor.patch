@@ -1,0 +1,161 @@
+PROPOSED — NOT APPLIED. Task 6, gated on Easton's explicit go-ahead.
+
+Scope note on the brief's proposal
+----------------------------------
+The brief proposes recording "actual fill price and fill timestamp". Both are
+already captured today: price_monitor passes `current_price` into
+_close_position, which stores it as `Trade.price`, and the SELL row's
+`opened_at`/`closed_at` are set at fill time. Adding those two columns would
+be near-redundant and would not close Pattern C.
+
+Pattern C is a *series* mismatch, not a missing fill price. The monitor reads
+the in-progress bar from a live Alpaca IEX query; `candles` is written later by
+candle_backfill.py from a different consolidation. 8 of 173 fills (4.6%) sit
+outside their own backfilled bar's OHLC range, and no candle-based replay can
+reproduce them because the price it filled at is not in the candle table.
+
+What actually closes it is recording THE BAR THE MONITOR OBSERVED. With that,
+replay can reconcile against the series the decision was made on. The diff
+below therefore adds the observed reference bar alongside the fill fields.
+
+Properties: additive columns only, all nullable, no behavioural change, no
+effect on what the system trades, no change to any exit decision. Existing rows
+keep NULL. SQLite ALTER TABLE ADD COLUMN is non-rewriting.
+
+Migration (run once, offline, on a backed-up DB):
+
+    ALTER TABLE trades ADD COLUMN fill_price REAL;
+    ALTER TABLE trades ADD COLUMN fill_ts DATETIME;
+    ALTER TABLE trades ADD COLUMN fill_source TEXT;
+    ALTER TABLE trades ADD COLUMN obs_bar_ts DATETIME;
+    ALTER TABLE trades ADD COLUMN obs_bar_open REAL;
+    ALTER TABLE trades ADD COLUMN obs_bar_high REAL;
+    ALTER TABLE trades ADD COLUMN obs_bar_low REAL;
+    ALTER TABLE trades ADD COLUMN obs_bar_close REAL;
+
+
+--- a/backend/database.py
++++ b/backend/database.py
+@@ class Trade(Base):
+     net_pnl         = Column(Float, nullable=True)
+     cost_model_ver  = Column(String(10), nullable=True)
+     # Entry prediction linkage — for SELL trades, points to the BUY trade's prediction_id
+     entry_prediction_id = Column(Integer, ForeignKey("predictions.id"), nullable=True)
++
++    # Observed-fill provenance — populated at exit; NULL on pre-migration rows.
++    # The bar columns record the candle the exit decision was actually taken on,
++    # which is not always the candle later written by candle_backfill.py.
++    fill_price    = Column(Float, nullable=True)
++    fill_ts       = Column(DateTime, nullable=True)
++    fill_source   = Column(String(20), nullable=True)   # price_monitor | prediction_cycle
++    obs_bar_ts    = Column(DateTime, nullable=True)
++    obs_bar_open  = Column(Float, nullable=True)
++    obs_bar_high  = Column(Float, nullable=True)
++    obs_bar_low   = Column(Float, nullable=True)
++    obs_bar_close = Column(Float, nullable=True)
+
+
+--- a/backend/trading_engine.py
++++ b/backend/trading_engine.py
+@@ def _close_position(
+     def _close_position(
+         self, pos: Position, portfolio: Portfolio,
+-        pred: Prediction, price: float, reason: str, db: Session
++        pred: Prediction, price: float, reason: str, db: Session,
++        fill_source: str = "prediction_cycle", obs_bar: dict | None = None
+     ) -> dict:
+@@
+         trade = Trade(
+             portfolio_id  = portfolio.id,
+             symbol        = pos.symbol,
+             direction     = TradeDirection.SELL,
+             quantity      = pos.quantity,
+             price         = price,
+             total_value   = proceeds,
+             status        = TradeStatus.CLOSED,
+             realized_pnl  = realized_pnl,
+             gross_pnl     = costs["gross_pnl"],
+             entry_fee     = costs["entry_fee"],
+             exit_fee      = costs["exit_fee"],
+             entry_slippage = costs["entry_slippage"],
+             exit_slippage  = costs["exit_slippage"],
+             net_pnl       = costs["net_pnl"],
+             cost_model_ver = costs["cost_model_ver"],
+             prediction_id = pred.id,
+             closed_at     = datetime.utcnow(),
+             notes         = f"Closed: {reason}",
++            fill_price    = price,
++            fill_ts       = datetime.utcnow(),
++            fill_source   = fill_source,
++            obs_bar_ts    = (obs_bar or {}).get("timestamp"),
++            obs_bar_open  = (obs_bar or {}).get("open"),
++            obs_bar_high  = (obs_bar or {}).get("high"),
++            obs_bar_low   = (obs_bar or {}).get("low"),
++            obs_bar_close = (obs_bar or {}).get("close"),
+         )
+
+
+--- a/backend/price_monitor.py
++++ b/backend/price_monitor.py
+@@ def run_price_monitor(trading_engine):
+                 df = fetcher.get_ohlcv(market, symbol, limit=2)
+                 if df is None or df.empty:
+                     continue
+
+                 current_price = float(df["close"].iloc[-1])
++                # The bar this decision is being taken on. Recorded so replay can
++                # reconcile against the series actually observed, rather than the
++                # one candle_backfill.py writes later.
++                _last = df.iloc[-1]
++                obs_bar = {
++                    "timestamp": df.index[-1].to_pydatetime()
++                                 if hasattr(df.index[-1], "to_pydatetime") else df.index[-1],
++                    "open":  float(_last["open"]),
++                    "high":  float(_last["high"]),
++                    "low":   float(_last["low"]),
++                    "close": float(_last["close"]),
++                }
+                 pos.current_price = current_price
+                 checked += 1
+@@
+                 if pct_change <= -stop_loss_pct:
+                     stub_pred = _make_stub(symbol, market, current_price)
+                     trading_engine._close_position(
+                         pos, portfolio, stub_pred,
+                         current_price,
+                         f"stop_loss ({pct_change*100:.1f}%)",
+                         db,
++                        fill_source="price_monitor",
++                        obs_bar=obs_bar,
+                     )
+@@
+                 elif pct_change >= take_profit_pct:
+                     stub_pred = _make_stub(symbol, market, current_price)
+                     trading_engine._close_position(
+                         pos, portfolio, stub_pred,
+                         current_price,
+                         f"take_profit ({pct_change*100:.1f}%)",
+                         db,
++                        fill_source="price_monitor",
++                        obs_bar=obs_bar,
+                     )
+
+
+Risks reviewed
+--------------
+- `_close_position` gains two keyword args with defaults, so the existing
+  prediction-cycle call site at trading_engine.py:282 is unaffected and keeps
+  recording fill_source="prediction_cycle".
+- `df.iloc[-1]` on a limit=2 fetch is the in-progress bar. That is the point:
+  it is what the decision was taken on. It is recorded, not acted on.
+- If get_ohlcv returns a frame without OHLC columns the dict build raises
+  inside the existing per-symbol try/except, which already logs and continues
+  to the next symbol. Worth confirming against data_fetcher before applying.
+- No column is read by any live code path. Writes only.
+
+What this does NOT fix
+----------------------
+Retrospective Pattern C. The 8 historical out-of-bar fills stay unmodelable;
+this only stops new ones from being unexplainable. Nor does it address the
+second bias mechanism found in Task 5 (overshoot/bar-range decoupling), which
+is a harness-side fix.

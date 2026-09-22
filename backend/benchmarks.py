@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from database import SessionLocal, Candle, Trade, Portfolio, Prediction, MarketType, TradeStatus, TradeDirection
 from cost_model import apply_costs
+from exit_sim import simulate_exit
 
 logger = logging.getLogger(__name__)
 
@@ -339,40 +340,38 @@ def _simulate_exit(
     is_short: bool = False,
 ) -> Optional[tuple[float, datetime]]:
     """
-    Walk forward from entry_ts through candles_df applying stop/TP exit rules.
-    Returns (exit_price, exit_timestamp) or None if no candles available.
-    For shorts: TP when price falls take_profit_pct, SL when price rises stop_loss_pct.
+    Thin adapter over exit_sim.simulate_exit, the single shared exit simulator.
+
+    All price-trigger logic now lives in exit_sim. This keeps the existing
+    (exit_price, exit_ts) return shape so call sites are unchanged.
+
+    NOTE: MAX_HOLD_HOURS is still applied as a BAR COUNT, not hours, exactly as
+    before this refactor. For stocks (~7 bars/day) "72h" is really ~10 trading
+    days. Pre-existing defect, deliberately not changed here.
     """
     future = candles_df[candles_df.index > entry_ts].head(MAX_HOLD_HOURS)
     if future.empty:
         return None
 
-    for ts, row in future.iterrows():
-        high  = float(row["high"])
-        low   = float(row["low"])
-        close = float(row["close"])
+    bars = [
+        (
+            ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts,
+            row["open"], row["high"], row["low"], row["close"],
+        )
+        for ts, row in future.iterrows()
+    ]
 
-        if not is_short:
-            # Long: TP = entry * (1+tp), SL = entry * (1-sl)
-            tp_price = entry_price * (1 + take_profit_pct)
-            sl_price = entry_price * (1 - stop_loss_pct)
-            if high >= tp_price:
-                return tp_price, ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
-            if low <= sl_price:
-                return sl_price, ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
-        else:
-            # Short: TP = entry * (1-tp), SL = entry * (1+sl)
-            tp_price = entry_price * (1 - take_profit_pct)
-            sl_price = entry_price * (1 + stop_loss_pct)
-            if low <= tp_price:
-                return tp_price, ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
-            if high >= sl_price:
-                return sl_price, ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
-
-    # Max hold period reached — exit at last close
-    last = future.iloc[-1]
-    last_ts = future.index[-1]
-    return float(last["close"]), last_ts.to_pydatetime() if hasattr(last_ts, "to_pydatetime") else last_ts
+    result = simulate_exit(
+        entry_price,
+        bars,
+        sl_pct=stop_loss_pct,
+        tp_pct=take_profit_pct,
+        max_bars=len(bars),
+        is_short=is_short,
+    )
+    if result is None:
+        return None
+    return result.exit_price, result.ts
 
 
 # -------------------------------------------------------
