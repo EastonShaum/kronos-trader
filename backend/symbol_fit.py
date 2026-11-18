@@ -25,20 +25,26 @@ from database import (
     TradeStatus, TradeDirection,
 )
 
-SUFFICIENT_N = 20   # trades needed to trust a per-symbol conclusion
+from stats_bootstrap import MIN_TRADES_FOR_CI, block_bootstrap_ci
+
+SUFFICIENT_N = MIN_TRADES_FOR_CI   # one bar across audit, reports and UI
 N_BOOT       = 5_000
 
 
-# ── Bootstrap helper (same method as benchmarks.py) ────────────────────────
+# ── Bootstrap helper ────────────────────────────────────────────────────────
 
 def _bootstrap_ci(values: list[float], n: int = N_BOOT, conf: float = 0.95):
+    """
+    Block bootstrap on the mean.
+
+    Previously an IID resample, which assumed consecutive trades on a symbol
+    were independent. They are not - they share regime, volatility and often
+    the same open position window - so the IID interval was too narrow.
+    """
     if len(values) < 2:
         return None, None
-    arr = np.array(values)
-    means = [np.mean(np.random.choice(arr, size=len(arr), replace=True))
-             for _ in range(n)]
-    alpha = (1 - conf) / 2
-    return float(np.quantile(means, alpha)), float(np.quantile(means, 1 - alpha))
+    ci = block_bootstrap_ci(values, reps=n, alpha=1 - conf, seed=0)
+    return ci["lower"], ci["upper"]
 
 
 # ── Candle helpers ──────────────────────────────────────────────────────────
@@ -275,6 +281,12 @@ def _phase3_symbol_ranking(rows: list[dict]) -> dict:
             "bootstrap_95ci_mean": (
                 [round(ci_lo, 4), round(ci_hi, 4)] if ci_lo is not None else None
             ),
+            # True only when the interval sits wholly on one side of zero.
+            # A mean without this is not a finding.
+            "ci_excludes_zero": (
+                ci_lo is not None and trustworthy and (ci_hi < 0 or ci_lo > 0)
+            ),
+            "insufficient_sample": not trustworthy,
             "heuristic_verdict": heuristic_verdict,
         })
 

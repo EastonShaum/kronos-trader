@@ -50,3 +50,13 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# -------------------------------------------------------
+# Extra safety: never commit any env/secret files
+# -------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.pytest_cache/

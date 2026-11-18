@@ -14,6 +14,7 @@ Three sections:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import random
@@ -805,6 +806,29 @@ def main(argv: list[str] | None = None) -> int:
         out = REPORTS / f"diagnostics_{date.today().isoformat()}.md"
         out.write_text(render(stop_fill, bench, ev, eras, purity, args.sims, args.seed))
         logger.info("Report written: %s", out)
+
+        # JSON sidecar for /api/diagnostics/three-arm. The dashboard reads this
+        # rather than recomputing: 1000 simulations per era is far too slow to
+        # serve synchronously.
+        sidecar = REPORTS / f"diagnostics_{date.today().isoformat()}.json"
+        sidecar.write_text(json.dumps({
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "n_sims": args.sims,
+            "seed": args.seed,
+            "eras": [
+                {"start": e["start"].isoformat(), "end": e["end"].isoformat(),
+                 "models": e["models"], "tp_pct": e["tp_pct"],
+                 "n_entries": e.get("n_entries", 0)}
+                for e in eras
+            ],
+            "purity": {k: v for k, v in purity.items() if k != "impure_eras"},
+            "stop_fill": {k: v for k, v in stop_fill.items()
+                          if k not in ("unreproducible",)},
+            "n_unreproducible": stop_fill.get("n_unreproducible", 0),
+            "three_arm": bench,
+            "per_symbol_ev": ev,
+        }, indent=2, default=str))
+        logger.info("JSON sidecar written: %s", sidecar)
         print(out)
     finally:
         conn.close()

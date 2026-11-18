@@ -39,6 +39,11 @@ from vendor.arch_bootstrap.bootstrap import (  # noqa: E402
 )
 from vendor.arch_bootstrap.utility.exceptions import PerformanceWarning  # noqa: E402
 
+# Canonical bar for "is this sample big enough to act on". Imported by
+# audit_engine and symbol_fit so one number governs every surface that ranks
+# or removes a symbol.
+MIN_TRADES_FOR_CI = 15
+
 _KINDS = {
     "moving": MovingBlockBootstrap,
     "circular": CircularBlockBootstrap,

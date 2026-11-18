@@ -604,6 +604,11 @@
     .mobile-nav-btn.active { color: var(--accent); }
     .mobile-nav-btn .mnav-icon { font-size: 17px; line-height: 1; }
   }
+  /* Six tabs on a narrow handset: tighten before labels start wrapping. */
+  @media (max-width: 400px) {
+    .mobile-nav-btn { font-size: 7px; letter-spacing: 0.2px; padding: 6px 0; gap: 2px; }
+    .mobile-nav-btn .mnav-icon { font-size: 15px; }
+  }
 </style>
 </head>
 <body>
@@ -744,6 +749,7 @@ function App() {
             { id:'charts',      icon:'╱╲', label:'Charts'     },
             { id:'symbols',     icon:'◫', label:'Symbols'     },
             { id:'audit',       icon:'◉', label:'Audit'       },
+            { id:'features',    icon:'❖', label:'Features'    },
             { id:'settings',    icon:'⚙', label:'Settings'    },
           ].map(({ id, icon, label }) => (
             <button
@@ -789,6 +795,7 @@ function App() {
           { id:'predictions', icon:'◎', label:'Predictions' },
           { id:'charts',      icon:'▲', label:'Charts'      },
           { id:'audit',       icon:'◉', label:'Audit'       },
+          { id:'features',    icon:'❖', label:'Features'    },
           { id:'settings',    icon:'⚙', label:'Settings'    },
         ].map(({ id, icon, label }) => (
           <button
@@ -978,6 +985,7 @@ function App() {
             {tab === 'audit' && <AuditTab />}
 
             {/* ---- SETTINGS TAB ---- */}
+            {tab === 'features' && <FeaturesTab />}
             {tab === 'settings' && <SettingsTab />}
           </>
         )}
@@ -1475,6 +1483,261 @@ function TradeRow({ trade, compact }) {
 // ===============================================
 // EQUITY TAB
 // ===============================================
+const FEATURE_GROUPS = [
+  {
+    title: 'Prediction & Models',
+    icon: '◎',
+    items: [
+      ['Kronos forecasting', 'A time-series foundation model predicts the next 24h of OHLC candles from the last 400 hourly bars.'],
+      ['Two model sizes', 'Kronos-small (24.7M params) and Kronos-mini. One is active at a time; the active model is the only one that can open trades.'],
+      ['Dual-model mode', 'Optionally runs both models every cycle. The inactive one still records predictions, so its accuracy can be tracked without risking capital.'],
+      ['Agreement gate', 'When enabled, an entry is skipped if the two models disagree on direction.'],
+      ['Confidence score', 'Every prediction carries a confidence value. Entries require it above a threshold; a very low value is read as a bearish flip and closes an open position.'],
+      ['Outcome recording', 'Each prediction is scored against what actually happened, giving a per-symbol and per-model hit rate.'],
+    ],
+  },
+  {
+    title: 'Trading Engine',
+    icon: '◈',
+    items: [
+      ['Paper trading only', 'No real orders are ever placed. Three separate portfolios (crypto, stocks, forex) each start at $1,000.'],
+      ['Position sizing', 'Each entry risks a configurable percentage of the cash available at that moment, so the book compounds and decays.'],
+      ['Entry gates', 'A trade needs: sufficient confidence, a minimum predicted move, no open position in that symbol, and no active cooldown.'],
+      ['Re-entry cooldown', 'After a position closes, that symbol is blocked for one full cycle to prevent immediate churn.'],
+      ['Exit rules', 'Stop-loss, take-profit, and a bearish-signal flip that closes on a confidence collapse rather than a price level.'],
+      ['Intraday price monitor', 'Runs every few minutes between prediction cycles so stops and targets fire when price actually crosses them, not only on the hour.'],
+      ['Cost model', 'Fees and adverse slippage are charged per side on notional, with per-symbol overrides. P&L is reported net.'],
+    ],
+  },
+  {
+    title: 'Market Data',
+    icon: '▦',
+    items: [
+      ['Multi-venue feeds', 'Binance for crypto, Alpaca (IEX) for equities, OANDA for forex.'],
+      ['Hourly candle store', 'OHLCV bars are persisted per symbol and market, with a unique constraint preventing duplicates.'],
+      ['Backfill', 'Historical candles can be fetched to extend the store backwards for analysis.'],
+      ['Price snapshots', 'Latest prices are polled on a short interval to mark open positions to market.'],
+    ],
+  },
+  {
+    title: 'Analysis & Diagnostics',
+    icon: '▲',
+    items: [
+      ['Shared exit simulator', 'One gap-aware simulator answers "where would this have filled". A bar that opens through a level fills at the open, not at the level, and a same-bar stop/target tie resolves to the stop.'],
+      ['Stop-fill validation', 'Compares every live stop against what the simulator would have produced, and separates the gap effect from sampling lag.'],
+      ['MFE / MAE', 'For each closed trade, the best and worst unrealised excursion during the hold, showing how much room the exit left behind.'],
+      ['Exit-policy replay', 'Re-runs historical entries under alternative stop/target rules to compare against what actually happened.'],
+      ['Three-arm benchmark', 'Random entries, live entries with simulated exits, and live results. Comparing the middle arm to each side separates entry selection from execution quality.'],
+      ['Confidence intervals', 'Per-symbol expected value is reported as a block-bootstrap interval, not a point estimate, and symbols with too few trades are marked insufficient rather than ranked.'],
+      ['Era segmentation', 'Results are split at recorded configuration changes so a model switch is never pooled with the period around it.'],
+      ['Replay harness', 'Read-only snapshots of the database can be replayed and reconciled against recorded history to check the simulator against ground truth.'],
+    ],
+  },
+  {
+    title: 'Audit & Approval',
+    icon: '◉',
+    items: [
+      ['Scheduled audits', 'A weekly and monthly review reads recent performance and proposes bounded parameter changes.'],
+      ['Approval queue', 'Every recommendation lands as pending. Nothing reaches live settings without being applied explicitly.'],
+      ['Bounds validation', 'Proposed values outside the allowed range for a parameter are clamped and flagged.'],
+      ['Evidence guards', 'Recommendations are checked against the data itself: symbol removals need enough trades and an interval excluding zero, model switches are blocked when the comparison windows do not overlap, and threshold raises report how much trade volume they would remove.'],
+      ['Full audit history', 'Every recommendation keeps its reasoning, status and reviewer notes, including ones that were reverted.'],
+    ],
+  },
+  {
+    title: 'Operations',
+    icon: '⚙',
+    items: [
+      ['Live settings', 'Risk parameters, symbol lists and model selection are editable and take effect without a restart.'],
+      ['Symbol enable/disable', 'Symbols can be paused without losing their history.'],
+      ['Discord notifications', 'Trade opens, closes and audit results can be pushed to a webhook.'],
+      ['Scheduler visibility', 'Next run times for every background job, and which prediction cycles are currently active.'],
+      ['Runs on a Raspberry Pi', 'CPU-only inference, SQLite storage, and a single process. Reachable remotely over Tailscale.'],
+    ],
+  },
+];
+
+// Shared verdict badge. A mean without an interval is not a finding, so a
+// symbol below the trade threshold is labelled, never ranked.
+// Entry selection vs execution quality, read from the latest generated
+// diagnostics report. Not computed on request: 1000 simulations per era is
+// far too slow to serve synchronously.
+function ThreeArmPanel() {
+  const [data, setData] = useState(null);
+  const [err, setErr]   = useState(null);
+
+  useEffect(() => {
+    fetch(`${API}/api/diagnostics/three-arm`)
+      .then(r => r.json())
+      .then(setData)
+      .catch(e => setErr(String(e)));
+  }, []);
+
+  if (err) return null;
+  if (!data) return null;
+
+  if (!data.available) {
+    return (
+      <div className="card" style={{ padding:'16px 20px', marginBottom:24 }}>
+        <div className="section-label" style={{ marginBottom:8 }}>Entry Skill vs Execution</div>
+        <div style={{ fontSize:12, color:'var(--muted)', lineHeight:1.6 }}>
+          {data.reason}
+        </div>
+      </div>
+    );
+  }
+
+  const arms = (data.three_arm || []).filter(r => !r.skipped);
+  if (!arms.length) return null;
+
+  return (
+    <div style={{ marginBottom:24 }}>
+      <div className="section-label">
+        Entry Skill vs Execution
+        <span style={{ float:'right', fontFamily:'var(--mono)', fontSize:10,
+                       color:'var(--muted)' }}>
+          {data.source_file} · {data.n_sims} sims
+        </span>
+      </div>
+
+      <div className="card" style={{ padding:'14px 18px', marginBottom:12 }}>
+        <div style={{ fontSize:12, lineHeight:1.6, color:'var(--muted)' }}>
+          Three arms differing in one thing each: <b style={{color:'var(--text)'}}>random</b> entries
+          with simulated exits, <b style={{color:'var(--text)'}}>sim-live</b> (the real entry
+          timestamps, simulated exits), and <b style={{color:'var(--text)'}}>live</b>.
+          Sim-live against random isolates <b style={{color:'var(--text)'}}>entry selection</b>;
+          live against sim-live isolates <b style={{color:'var(--text)'}}>execution</b>.
+          Execution figures are an upper bound — the simulator is still
+          optimistic on stop fills.
+        </div>
+      </div>
+
+      {arms.map(row => {
+        const pct  = row.entry_skill_percentile ?? 0;
+        const cost = row.execution_cost ?? 0;
+        return (
+          <div className="card" key={row.era} style={{ padding:'14px 18px', marginBottom:10 }}>
+            <div style={{ fontFamily:'var(--mono)', fontSize:11, color:'var(--muted)',
+                          marginBottom:10 }}>
+              {row.era}
+            </div>
+            <div style={{ display:'flex', gap:24, flexWrap:'wrap' }}>
+              <div style={{ minWidth:150 }}>
+                <div style={{ fontSize:10, color:'var(--muted)', fontFamily:'var(--mono)' }}>
+                  ENTRY SKILL
+                </div>
+                <div style={{ fontFamily:'var(--mono)', fontSize:18,
+                              color: pct >= 50 ? 'var(--success)' : 'var(--danger)' }}>
+                  {pct.toFixed(1)}<span style={{ fontSize:11, color:'var(--muted)' }}>
+                    {' '}pctile vs random</span>
+                </div>
+              </div>
+              <div style={{ minWidth:150 }}>
+                <div style={{ fontSize:10, color:'var(--muted)', fontFamily:'var(--mono)' }}>
+                  EXECUTION COST
+                </div>
+                <div style={{ fontFamily:'var(--mono)', fontSize:18,
+                              color: cost >= 0 ? 'var(--success)' : 'var(--danger)' }}>
+                  {cost >= 0 ? '+' : ''}{cost.toFixed(2)}
+                </div>
+              </div>
+              <div style={{ minWidth:180, fontFamily:'var(--mono)', fontSize:11,
+                            color:'var(--muted)', lineHeight:1.7 }}>
+                <div>live {row.live_pnl?.toFixed(2)} · {row.live_n_trades} trades</div>
+                <div>sim-live {row.sim_live_pnl?.toFixed(2)}</div>
+                <div>random mean {row.random_mean?.toFixed(2)}</div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function VerdictBadge({ verdict, n, minN }) {
+  const map = {
+    negative:     { bg:'rgba(239,68,68,0.15)',  fg:'var(--danger)',  text:'CI < 0' },
+    positive:     { bg:'rgba(34,197,94,0.15)',  fg:'var(--success)', text:'CI > 0' },
+    inconclusive: { bg:'rgba(148,163,184,0.12)',fg:'var(--muted)',   text:'inconclusive' },
+    insufficient: { bg:'rgba(234,179,8,0.15)',  fg:'#eab308',        text:`insufficient · ${n}/${minN}` },
+  };
+  const st = map[verdict] || map.inconclusive;
+  return (
+    <span style={{
+      background:st.bg, color:st.fg, borderRadius:4, padding:'1px 6px',
+      fontFamily:'var(--mono)', fontSize:9, letterSpacing:0.3, whiteSpace:'nowrap',
+    }}>{st.text}</span>
+  );
+}
+
+function FeaturesTab() {
+  const [open, setOpen] = useState(() => FEATURE_GROUPS.map(() => true));
+  const toggle = i => setOpen(o => o.map((v, j) => (j === i ? !v : v)));
+  const total = FEATURE_GROUPS.reduce((n, g) => n + g.items.length, 0);
+
+  return (
+    <div>
+      <div className="card" style={{ padding:'18px 20px', marginBottom:20 }}>
+        <div style={{ fontSize:13, lineHeight:1.6, color:'var(--text)' }}>
+          What this system does, in plain terms — {total} features across {FEATURE_GROUPS.length} areas.
+        </div>
+        <div style={{ fontSize:12, lineHeight:1.6, color:'var(--muted)', marginTop:8 }}>
+          Everything here is paper trading. No real orders are placed, and no recommendation
+          changes a setting without being approved.
+        </div>
+      </div>
+
+      {FEATURE_GROUPS.map((group, i) => (
+        <div key={group.title} style={{ marginBottom:16 }}>
+          <button
+            onClick={() => toggle(i)}
+            style={{
+              width:'100%', display:'flex', alignItems:'center', gap:10,
+              background:'none', border:'none', cursor:'pointer', padding:'6px 2px',
+              color:'var(--text)', textAlign:'left',
+            }}
+          >
+            <span style={{ fontSize:15, color:'var(--accent)' }}>{group.icon}</span>
+            <span style={{ fontFamily:'var(--mono)', fontSize:11, letterSpacing:'0.5px',
+                           textTransform:'uppercase', color:'var(--muted)' }}>
+              {group.title}
+            </span>
+            <span style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)' }}>
+              ({group.items.length})
+            </span>
+            <span style={{ marginLeft:'auto', color:'var(--muted)', fontSize:11 }}>
+              {open[i] ? '−' : '+'}
+            </span>
+          </button>
+
+          {open[i] && (
+            <div className="card" style={{ padding:'4px 0', marginTop:6 }}>
+              {group.items.map(([name, desc], j) => (
+                <div
+                  key={name}
+                  style={{
+                    padding:'12px 18px',
+                    borderTop: j === 0 ? 'none' : '1px solid var(--border)',
+                  }}
+                >
+                  <div style={{ fontFamily:'var(--mono)', fontSize:12, color:'var(--text)',
+                                marginBottom:4 }}>
+                    {name}
+                  </div>
+                  <div style={{ fontSize:12.5, lineHeight:1.55, color:'var(--muted)' }}>
+                    {desc}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function EquityTab() {
   const [eqMarket, setEqMarket] = useState('all');
   const [days, setDays]         = useState(30);
@@ -1500,9 +1763,26 @@ function EquityTab() {
 
   const points   = data?.points ?? [];
   const startBal = data?.starting_balance ?? 0;
-  const lastEq   = points.length > 0 ? points[points.length - 1].equity : startBal;
-  const isUp     = lastEq >= startBal;
+  // Compare against the equity at the START OF THE SELECTED WINDOW, not the
+  // all-time starting balance. A portfolio can be up over 30 days while still
+  // below its inception balance, and comparing to inception painted that red.
+  const winStart = data?.window_start_equity ?? startBal;
+  const lastEq   = points.length > 0 ? points[points.length - 1].equity : winStart;
+  const isUp     = lastEq >= winStart;
   const lineColor = isUp ? 'var(--success)' : 'var(--danger)';
+  const winChange    = data?.window_change ?? (lastEq - winStart);
+  const winChangePct = data?.window_change_pct ?? 0;
+  const rangeLabel   = data?.days > 0 ? `${data.days}d` : 'All time';
+  const [showNet, setShowNet]   = useState(true);
+  const [showMarks, setShowMarks] = useState(true);
+  const costDrag = data?.cost_drag ?? 0;
+  // Only annotate changes that fall inside the plotted window.
+  const marks = (data?.config_changes || []).filter(c => {
+    if (!points.length) return false;
+    const t = new Date(c.time).getTime();
+    return t >= new Date(points[0].time).getTime()
+        && t <= new Date(points[points.length - 1].time).getTime();
+  });
 
   const tickFmt = t => {
     try {
@@ -1540,7 +1820,33 @@ function EquityTab() {
       {/* Chart */}
       {points.length > 1 ? (
         <>
-          <div className="section-label">Portfolio Equity Over Time</div>
+          <div className="section-label">
+            Portfolio Equity Over Time
+            <span style={{ float:'right', fontFamily:'var(--mono)', fontSize:11,
+                           color: isUp ? 'var(--success)' : 'var(--danger)' }}>
+              {rangeLabel}: {winChange >= 0 ? '+' : ''}{fmtUSD(winChange)}
+              {' '}({winChangePct >= 0 ? '+' : ''}{winChangePct}%)
+              {' · from '}{fmtUSD(winStart)}
+            </span>
+          </div>
+          <div style={{ display:'flex', gap:14, alignItems:'center', flexWrap:'wrap',
+                        marginBottom:8, fontFamily:'var(--mono)', fontSize:10,
+                        color:'var(--muted)' }}>
+            <label style={{ display:'flex', gap:5, alignItems:'center', cursor:'pointer' }}>
+              <input type="checkbox" checked={showNet}
+                     onChange={e => setShowNet(e.target.checked)} />
+              Net of costs
+            </label>
+            <label style={{ display:'flex', gap:5, alignItems:'center', cursor:'pointer' }}>
+              <input type="checkbox" checked={showMarks}
+                     onChange={e => setShowMarks(e.target.checked)} />
+              Config changes ({marks.length})
+            </label>
+            <span>
+              Solid line is gross (matches cash balance). Dashed is net of fees
+              and slippage. The gap is cumulative cost drag: {fmtUSD(costDrag)}.
+            </span>
+          </div>
           <div className="card" style={{ padding:'20px 8px', marginBottom:24 }}>
             <ResponsiveContainer width="100%" height={320}>
               <AreaChart data={points} margin={{ top:10, right:20, left:10, bottom:10 }}>
@@ -1568,7 +1874,8 @@ function EquityTab() {
                   labelFormatter={t => { try { return new Date(t).toLocaleString(); } catch { return t; } }}
                   formatter={(val, name) => [
                     fmtUSD(val),
-                    name === 'equity' ? 'Equity' : name,
+                    name === 'equity' ? 'Equity (gross)' :
+                    name === 'net_equity' ? 'Equity (net of costs)' : name,
                   ]}
                 />
                 {startBal > 0 && (
@@ -1581,6 +1888,32 @@ function EquityTab() {
                       fill: 'var(--muted)', fontSize: 10,
                       fontFamily: 'var(--mono)', position: 'insideTopRight',
                     }}
+                  />
+                )}
+                {showMarks && marks.map((c, i) => (
+                  <ReferenceLine
+                    key={`${c.time}-${i}`}
+                    x={c.time}
+                    stroke={c.kind === 'model' ? 'var(--accent2)' : 'var(--warn)'}
+                    strokeDasharray="4 4"
+                    label={{
+                      value: c.kind === 'model' ? '◉' : '⚙',
+                      fill: c.kind === 'model' ? 'var(--accent2)' : 'var(--warn)',
+                      fontSize: 11, position: 'top',
+                    }}
+                  />
+                ))}
+                {showNet && (
+                  <Area
+                    type="monotone"
+                    dataKey="net_equity"
+                    stroke="var(--muted)"
+                    strokeWidth={1.5}
+                    strokeDasharray="5 3"
+                    fill="none"
+                    dot={false}
+                    name="net_equity"
+                    isAnimationActive={false}
                   />
                 )}
                 <Area
@@ -2325,13 +2658,23 @@ function SymbolsTab() {
   const [saving, setSaving]     = useState(false);
   const [saved,  setSaved]      = useState(false);
   const [newSym, setNewSym]     = useState({ crypto:'', stocks:'', forex:'' });
+  const [perf, setPerf]         = useState(null);
 
   useEffect(() => {
     fetch(`${API}/api/settings`)
       .then(r => r.json())
       .then(d => { setSettings(d); setOriginal(d); })
       .catch(console.error);
+    fetch(`${API}/api/symbol-performance`)
+      .then(r => r.json())
+      .then(setPerf)
+      .catch(console.error);
   }, []);
+
+  const perfBySymbol = React.useMemo(() => Object.fromEntries(
+    (perf?.symbols || []).map(r => [r.symbol, r])
+  ), [perf]);
+  const minN = perf?.min_trades_for_ci ?? 15;
 
   const isDirty = settings && original && JSON.stringify(settings) !== JSON.stringify(original);
 
@@ -2407,6 +2750,11 @@ function SymbolsTab() {
       <div style={{ fontSize:11, color:'var(--muted)', fontFamily:'var(--mono)', marginBottom:16, lineHeight:1.6 }}>
         Toggle a symbol off to skip it during prediction and trading runs.
         Disabled symbols still appear in charts and history.
+        <br />
+        Each symbol shows net P&L and a block-bootstrap interval. Symbols with
+        fewer than {minN} closed round trips are marked <b>insufficient</b> and
+        carry no interval — their average is not distinguishable from noise, so
+        it should not be used to justify removing them.
       </div>
 
       {markets.map(({ key, label, placeholder }) => (
@@ -2430,8 +2778,24 @@ function SymbolsTab() {
                   <div className="mono" style={{ fontWeight:700, fontSize:13,
                     color: isEnabled(sym) ? 'var(--text)' : 'var(--muted)',
                   }}>{sym}</div>
-                  <div style={{ fontSize:10, color:'var(--muted)', fontFamily:'var(--mono)', marginTop:2 }}>
-                    {isEnabled(sym) ? 'Trading enabled' : 'Disabled — skipped'}
+                  <div style={{ fontSize:10, color:'var(--muted)', fontFamily:'var(--mono)',
+                                marginTop:2, display:'flex', alignItems:'center', gap:8,
+                                flexWrap:'wrap' }}>
+                    <span>{isEnabled(sym) ? 'Trading enabled' : 'Disabled — skipped'}</span>
+                    {perfBySymbol[sym] && (
+                      <>
+                        <VerdictBadge verdict={perfBySymbol[sym].verdict}
+                                      n={perfBySymbol[sym].n_trades} minN={minN} />
+                        <span style={{ color: perfBySymbol[sym].total_net_pnl >= 0
+                                              ? 'var(--success)' : 'var(--danger)' }}>
+                          {perfBySymbol[sym].total_net_pnl >= 0 ? '+' : ''}
+                          {perfBySymbol[sym].total_net_pnl} net
+                        </span>
+                        {perfBySymbol[sym].ci_95 && (
+                          <span>CI [{perfBySymbol[sym].ci_95[0]}, {perfBySymbol[sym].ci_95[1]}]</span>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2952,6 +3316,8 @@ function BenchmarksTab() {
     <div>
       <CoverageBanner />
 
+      <ThreeArmPanel />
+
       {/* Controls bar */}
       <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:20, flexWrap:'wrap' }}>
         <button className="btn btn-secondary"
@@ -3325,10 +3691,20 @@ function AuditTab() {
     }
   };
 
-  const approve = async (id) => {
-    const r = await fetch(`${API}/api/audit/recommendations/${id}/approve`, { method: 'POST' });
-    if (r.ok) { flash('Approved and applied.'); fetchRecs(); }
-    else { const e = await r.json(); flash(e.detail || 'Approve failed.', false); }
+  const approve = async (id, force = false) => {
+    const url = `${API}/api/audit/recommendations/${id}/approve${force ? '?force=true' : ''}`;
+    const r = await fetch(url, { method: 'POST' });
+    if (r.ok) { flash('Approved and applied.'); fetchRecs(); return; }
+    const e = await r.json().catch(() => ({}));
+    // 409 means a guard rejected it. Applying anyway has to be deliberate, so
+    // the server refuses the first time and the operator has to confirm.
+    if (r.status === 409) {
+      if (window.confirm(
+        `${e.detail}\n\nApply it anyway?`
+      )) { approve(id, true); }
+      return;
+    }
+    flash(e.detail || 'Approve failed.', false);
   };
 
   const reject = async (id) => {
@@ -3342,11 +3718,18 @@ function AuditTab() {
     else { flash('Reject failed.', false); }
   };
 
+  // Values set by the audit's own evidence guards, not by the model. Each one
+  // marks a recommendation the data does not support.
   const CONF_COLOR = {
-    high:          'var(--success)',
-    medium:        'var(--warn)',
-    low:           'var(--muted)',
-    out_of_bounds: 'var(--danger)',
+    high:                  'var(--success)',
+    medium:                'var(--warn)',
+    low:                   'var(--muted)',
+    out_of_bounds:         'var(--danger)',
+    insufficient_evidence: 'var(--danger)',
+    ci_includes_zero:      'var(--danger)',
+    no_evidence:           'var(--danger)',
+    confounded:            'var(--danger)',
+    volume_collapse:       'var(--danger)',
   };
 
   const STATUS_COLOR = {
@@ -3474,10 +3857,46 @@ function RecCard({ rec, onApprove, onReject, confColor, statusColor, showActions
   const [expanded, setExpanded] = useState(false);
 
   const conf = rec.confidence || 'low';
-  const confLabel = conf === 'out_of_bounds' ? 'OUT OF BOUNDS' : conf.toUpperCase();
+  const FLAG_LABEL = {
+    out_of_bounds:         'OUT OF BOUNDS',
+    insufficient_evidence: 'INSUFFICIENT EVIDENCE',
+    ci_includes_zero:      'CI INCLUDES ZERO',
+    no_evidence:           'NO EVIDENCE',
+    confounded:            'CONFOUNDED',
+    volume_collapse:       'VOLUME COLLAPSE',
+  };
+  const isFlagged = conf in FLAG_LABEL;
+  const confLabel = FLAG_LABEL[conf] || conf.toUpperCase();
+
+  const FLAG_WHY = {
+    out_of_bounds:         'The proposed value was outside the allowed range and has been clamped.',
+    insufficient_evidence: 'Too few closed round trips to distinguish this symbol from noise.',
+    ci_includes_zero:      'The confidence interval on this symbol includes zero.',
+    no_evidence:           'No closed trades for this symbol in the lookback window.',
+    confounded:            'The two models predicted over non-overlapping periods, so the accuracy gap is confounded with market conditions.',
+    volume_collapse:       'This threshold removes most of the tradeable population.',
+  };
 
   return (
-    <div className="card" style={{ marginBottom:12 }}>
+    <div className="card" style={{ marginBottom:12,
+      borderColor: isFlagged ? 'var(--danger)' : undefined }}>
+      {isFlagged && (
+        <div style={{
+          display:'flex', gap:8, alignItems:'flex-start',
+          background:'rgba(239,68,68,0.10)', border:'1px solid rgba(239,68,68,0.35)',
+          borderRadius:6, padding:'8px 12px', marginBottom:12,
+        }}>
+          <span style={{ color:'var(--danger)', fontSize:13, lineHeight:1.3 }}>⚠</span>
+          <div style={{ fontSize:11.5, lineHeight:1.5, color:'var(--text)' }}>
+            <b style={{ fontFamily:'var(--mono)', fontSize:10, letterSpacing:0.5 }}>
+              {confLabel}
+            </b>
+            {' — '}{FLAG_WHY[conf]}
+            {' '}This was rejected by an evidence check, not by the model. Applying
+            it requires an explicit confirmation.
+          </div>
+        </div>
+      )}
       <div style={{ display:'flex', alignItems:'flex-start', gap:12, justifyContent:'space-between', flexWrap:'wrap' }}>
         {/* Left: param diff */}
         <div style={{ flex:1, minWidth:200 }}>

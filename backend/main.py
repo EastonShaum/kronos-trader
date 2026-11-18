@@ -1200,6 +1200,148 @@ def get_accuracy(db: Session = Depends(get_db)):
 # -------------------------------------------------------
 # Equity Curve
 # -------------------------------------------------------
+@app.get("/api/symbol-performance")
+def get_symbol_performance(db: Session = Depends(get_db)):
+    """
+    Per-symbol round-trip performance with intervals.
+
+    Deliberately light: the Symbols tab needs n, P&L and an interval, not the
+    full five-phase symbol-fit analysis. Exits only - a BUY row carries no
+    result and counting it inflates both trade count and win rate.
+    """
+    from database import Portfolio, Trade, TradeStatus, TradeDirection
+    from stats_bootstrap import MIN_TRADES_FOR_CI, block_bootstrap_ci
+
+    rows = (
+        db.query(Trade, Portfolio)
+        .join(Portfolio, Trade.portfolio_id == Portfolio.id)
+        .filter(
+            Trade.status    == TradeStatus.CLOSED,
+            Trade.direction == TradeDirection.SELL,
+        )
+        .all()
+    )
+
+    by_symbol: dict = {}
+    for trade, portfolio in rows:
+        pnl = trade.net_pnl if trade.net_pnl is not None else (trade.realized_pnl or 0)
+        rec = by_symbol.setdefault(trade.symbol, {
+            "symbol": trade.symbol,
+            "market": portfolio.market.value,
+            "pnls": [],
+        })
+        rec["pnls"].append(float(pnl))
+
+    out = []
+    for rec in by_symbol.values():
+        pnls = rec.pop("pnls")
+        n = len(pnls)
+        wins = sum(1 for p in pnls if p >= 0)
+        rec.update({
+            "n_trades":     n,
+            "total_net_pnl": round(sum(pnls), 2),
+            "avg_net_pnl":  round(sum(pnls) / n, 4) if n else 0.0,
+            "win_rate_pct": round(wins / n * 100, 1) if n else 0.0,
+        })
+        if n >= MIN_TRADES_FOR_CI:
+            ci = block_bootstrap_ci(pnls, reps=2000, seed=0)
+            rec["ci_95"] = [round(ci["lower"], 4), round(ci["upper"], 4)]
+            rec["ci_excludes_zero"] = ci["upper"] < 0 or ci["lower"] > 0
+            rec["insufficient_sample"] = False
+            rec["verdict"] = (
+                "negative" if ci["upper"] < 0 else
+                "positive" if ci["lower"] > 0 else
+                "inconclusive"
+            )
+        else:
+            rec["ci_95"] = None
+            rec["ci_excludes_zero"] = False
+            rec["insufficient_sample"] = True
+            rec["verdict"] = "insufficient"
+        out.append(rec)
+
+    out.sort(key=lambda r: r["total_net_pnl"])
+    return {
+        "symbols": out,
+        "min_trades_for_ci": MIN_TRADES_FOR_CI,
+        "pnl_basis": "net_pnl (after fees and slippage)",
+        "note": (
+            "Symbols below the trade threshold get no interval and are marked "
+            "insufficient rather than ranked. A mean built on a handful of "
+            "trades is not a finding."
+        ),
+    }
+
+
+def _config_eras(db: Session) -> list:
+    """
+    Recorded configuration changes, as chart annotations.
+
+    Boundaries come from applied audit_recommendations. settings.json is
+    gitignored and has never been committed, so this table is the only
+    recoverable history of when the system's behaviour changed.
+    """
+    from database import AuditRecommendation
+
+    recs = (
+        db.query(AuditRecommendation)
+        .filter(
+            AuditRecommendation.status == "applied",
+            AuditRecommendation.applied_at != None,
+            AuditRecommendation.param.in_(["active_model", "take_profit_pct",
+                                           "stop_loss_pct", "min_confidence",
+                                           "min_predicted_move_pct",
+                                           "position_size_pct"]),
+        )
+        .order_by(AuditRecommendation.applied_at)
+        .all()
+    )
+    return [{
+        "time":  r.applied_at.isoformat() + "Z",
+        "param": r.param,
+        "from":  r.current_value,
+        "to":    r.proposed_value,
+        "label": f"{r.param}: {r.current_value} → {r.proposed_value}",
+        "kind":  "model" if r.param == "active_model" else "risk",
+    } for r in recs]
+
+
+@app.get("/api/config-eras")
+def get_config_eras(db: Session = Depends(get_db)):
+    return {"changes": _config_eras(db)}
+
+
+@app.get("/api/diagnostics/three-arm")
+def get_three_arm():
+    """
+    Latest three-arm benchmark, read from the most recent generated report.
+
+    Computed by backend/scripts/rerun_diagnostics.py rather than on request -
+    1000 simulations per era takes far too long to serve synchronously. The
+    response carries generated_at so the UI can show how stale it is.
+    """
+    import glob as _glob
+    import json as _json
+    import pathlib as _pl
+
+    reports = sorted(_glob.glob(str(_pl.Path(__file__).parent / "reports" / "diagnostics_*.json")))
+    if not reports:
+        return {
+            "available": False,
+            "reason": "No diagnostics report has been generated yet. "
+                      "Run: venv/bin/python backend/scripts/rerun_diagnostics.py",
+        }
+    try:
+        with open(reports[-1]) as f:
+            payload = _json.load(f)
+    except Exception as e:
+        return {"available": False, "reason": f"Could not read report: {e}"}
+
+    payload["available"] = True
+    payload["source_file"] = _pl.Path(reports[-1]).name
+    return payload
+
+
 @app.get("/api/equity-curve")
 def get_equity_curve(
     market: Optional[str] = None,
@@ -1259,31 +1401,78 @@ def get_equity_curve(
     # Sort all closed trades chronologically
     all_closed.sort(key=lambda x: x[0].closed_at)
 
-    # Running realized PnL per market
-    running_pnl: dict = {mkt: 0.0 for mkt in portfolios}
+    # P&L realized BEFORE the window. A windowed chart has to open at the
+    # equity the portfolio actually held at the cutoff; anchoring at
+    # starting_balance instead made every 7d/30d view begin at $3000 and then
+    # jump to live equity at the final point.
+    prior_pnl: dict = {}
+    prior_net: dict = {}
+    for mkt, portfolio in portfolios.items():
+        prior = (
+            db.query(Trade)
+            .filter(
+                Trade.portfolio_id == portfolio.id,
+                Trade.status       == TradeStatus.CLOSED,
+                Trade.closed_at    != None,
+                Trade.closed_at    <  cutoff,
+            )
+            .all()
+        )
+        prior_pnl[mkt] = sum(t.realized_pnl or 0 for t in prior)
+        prior_net[mkt] = sum(
+            (t.net_pnl if t.net_pnl is not None else (t.realized_pnl or 0)) for t in prior
+        )
+
+    # Running realized PnL per market, opening from the pre-window position.
+    # Two series: `equity` follows realized_pnl because that is what
+    # portfolio.cash_balance actually tracks, so it ties out with the live
+    # balance. `net_equity` subtracts fees and slippage. The gap between them
+    # is the cumulative cost drag, which is otherwise invisible on this chart.
+    running_pnl: dict = dict(prior_pnl)
+    running_net: dict = dict(prior_net)
+
+    window_start_equity = sum(
+        portfolios[m].starting_balance + prior_pnl[m] for m in portfolios
+    )
+    window_start_net = sum(
+        portfolios[m].starting_balance + prior_net[m] for m in portfolios
+    )
 
     # Build the curve
     points = []
 
-    # Anchor point at the earliest portfolio creation
-    earliest_ts = min(p.created_at for p in portfolios.values())
+    # Anchor: the cutoff for a windowed view, portfolio creation for all-time.
+    if days > 0:
+        anchor_ts = cutoff
+    else:
+        anchor_ts = min(p.created_at for p in portfolios.values())
+    anchor_pnl = window_start_equity - total_starting
     points.append({
-        "time":    earliest_ts.isoformat() + "Z",
-        "equity":  round(total_starting, 2),
-        "pnl":     0.0,
-        "pnl_pct": 0.0,
+        "time":    anchor_ts.isoformat() + "Z",
+        "equity":  round(window_start_equity, 2),
+        "net_equity": round(window_start_net, 2),
+        "pnl":     round(anchor_pnl, 2),
+        "pnl_pct": round((anchor_pnl / total_starting) * 100, 2) if total_starting else 0.0,
     })
 
     for trade, mkt in all_closed:
         running_pnl[mkt] += trade.realized_pnl or 0
+        running_net[mkt] += (
+            trade.net_pnl if trade.net_pnl is not None else (trade.realized_pnl or 0)
+        )
         total_equity = sum(
             portfolios[m].starting_balance + running_pnl[m]
+            for m in portfolios
+        )
+        total_net = sum(
+            portfolios[m].starting_balance + running_net[m]
             for m in portfolios
         )
         total_pnl = total_equity - total_starting
         points.append({
             "time":    trade.closed_at.isoformat() + "Z",
             "equity":  round(total_equity, 2),
+            "net_equity": round(total_net, 2),
             "pnl":     round(total_pnl, 2),
             "pnl_pct": round((total_pnl / total_starting) * 100, 2) if total_starting else 0,
         })
@@ -1299,9 +1488,11 @@ def get_equity_curve(
             pos.current_price * pos.quantity for pos in positions
         )
     live_pnl = live_equity - total_starting
+    live_cost_drag = sum(running_pnl[m] - running_net[m] for m in portfolios)
     points.append({
         "time":    datetime.utcnow().isoformat() + "Z",
         "equity":  round(live_equity, 2),
+        "net_equity": round(live_equity - live_cost_drag, 2),
         "pnl":     round(live_pnl, 2),
         "pnl_pct": round((live_pnl / total_starting) * 100, 2) if total_starting else 0,
     })
@@ -1317,9 +1508,23 @@ def get_equity_curve(
             if dd > max_dd:
                 max_dd = dd
 
+    window_end_equity = points[-1]["equity"] if points else window_start_equity
+    window_change = window_end_equity - window_start_equity
+
     return {
         "points":           points,
         "starting_balance": round(total_starting, 2),
+        # Equity at the start of the selected window. Compare against this, not
+        # starting_balance - over 30 days a portfolio can be up while still
+        # sitting below its all-time starting balance.
+        "window_start_equity": round(window_start_equity, 2),
+        "window_change":       round(window_change, 2),
+        "window_change_pct":   round((window_change / window_start_equity) * 100, 2)
+                               if window_start_equity else 0.0,
+        "days":             days,
+        "pnl_basis": "realized_pnl (gross). net_equity subtracts fees and slippage.",
+        "cost_drag": round(sum(running_pnl[m] - running_net[m] for m in portfolios), 2),
+        "config_changes": _config_eras(db),
         "max_drawdown":     round(max_dd, 2),
         "best_trade":       round(best_trade_val, 2) if best_trade_val is not None else 0,
         "worst_trade":      round(worst_trade_val, 2) if worst_trade_val is not None else 0,
@@ -1391,14 +1596,37 @@ def get_audit_recommendations(
     ]
 
 
+# Confidence values set by the audit's own guards rather than by the model.
+# Each marks a recommendation the data does not support.
+FLAGGED_CONFIDENCE = {
+    "out_of_bounds":         "proposed value was outside the allowed range and was clamped",
+    "insufficient_evidence": "too few round trips to distinguish the symbol from noise",
+    "ci_includes_zero":      "the confidence interval includes zero",
+    "no_evidence":           "no closed trades for this symbol in the window",
+    "confounded":            "the model comparison windows do not overlap",
+    "volume_collapse":       "the change removes most of the tradeable population",
+}
+
+
 @app.post("/api/audit/recommendations/{rec_id}/approve")
-def approve_audit_recommendation(rec_id: int, db: Session = Depends(get_db)):
+def approve_audit_recommendation(rec_id: int, force: bool = False,
+                                 db: Session = Depends(get_db)):
     """Approve a recommendation and apply the change via the settings write path."""
     rec = db.query(AuditRecommendation).filter(AuditRecommendation.id == rec_id).first()
     if not rec:
         raise HTTPException(404, "Recommendation not found")
     if rec.status != "pending":
         raise HTTPException(400, f"Recommendation is already '{rec.status}'")
+
+    # A guard flag means the evidence check already rejected this. Applying it
+    # anyway has to be deliberate, so it cannot be a single click.
+    if rec.confidence in FLAGGED_CONFIDENCE and not force:
+        raise HTTPException(
+            409,
+            f"Recommendation is flagged '{rec.confidence}': "
+            f"{FLAGGED_CONFIDENCE[rec.confidence]}. "
+            f"Re-send with ?force=true to apply it anyway.",
+        )
 
     # Apply the change using the existing settings write path
     settings = load_settings()

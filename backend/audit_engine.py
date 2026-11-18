@@ -22,11 +22,8 @@ from database import (
     AuditRecommendation, Prediction, Trade, Portfolio, MarketType,
     TradeStatus, TradeDirection,
 )
-from stats_bootstrap import block_bootstrap_ci
-
-# A round trip needs enough observations before a mean is worth acting on.
-# Matches the bar used in backend/reports/diagnostics_*.md.
-MIN_TRADES_FOR_CI = 15
+# MIN_TRADES_FOR_CI is re-exported so existing callers and tests keep working.
+from stats_bootstrap import MIN_TRADES_FOR_CI, block_bootstrap_ci
 
 logger = logging.getLogger(__name__)
 
